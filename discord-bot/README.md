@@ -6,9 +6,19 @@ Sticky message / 強化ログ / bump・up リマインダー / anti-nuke・anti-
 ## 実装済み機能
 
 ### 📌 `/stick msg:<内容>`
-実行したチャンネルの下部に指定メッセージを固定表示します。新しいメッセージが投稿されると
-自動で古い固定メッセージを削除し、最新の位置に再送信します（連投時は2秒デバウンス）。
+実行したチャンネルの下部に指定メッセージを **embedなし・そのままのプレーンテキストで** 固定表示します。
+新しいメッセージが投稿されると自動で古い固定メッセージを削除し、最新の位置に再送信します（連投時は2秒デバウンス）。
 `/unstick` で解除できます。
+
+### 🎨 `/embed title:<> discussion:<> image:<任意> color:<>`
+タイトル・本文・画像・色を指定してカスタムEmbedを送信できます。`color`はプリセット名(red/blue/green等)か
+`#RRGGBB`形式のカラーコードに対応（入力補完あり）。`footer`・`thumbnail`も任意で指定可能です。
+
+### 🔎 `/info user user:<メンション>`
+指定ユーザーの詳細情報を表示します。オンライン状況、デバイス種別（デスクトップ/モバイル/Web）、
+現在のアクティビティ（ゲーム・Spotify再生中・カスタムステータス）、ボイスチャンネル接続状況、
+ロール、ブースト開始日、タイムアウト状況などをまとめて確認できます。
+**この機能を使うには Developer Portal で `PRESENCE INTENT` を有効にする必要があります。**
 
 ### 📝 `/log ch:<チャンネル>`
 指定チャンネルに以下をembedで記録します。
@@ -40,11 +50,37 @@ Disboardの`/bump`が成功したメッセージを検知し、120分後の使�
 ### 🛡️ セキュリティ機能 `/security setup`
 - **anti-mention-spam**: 1メッセージ内のメンション数が閾値を超えたら削除＋タイムアウト
 - **anti-invite**: 他サーバーへの招待リンク投稿を自動削除
+- **anti-phishing**: 既知の詐欺/フィッシングサイトの典型的なドメインパターンを自動削除
+- **NGワードフィルター**: `/security addword` `/security removeword` `/security wordlist` で単語を管理し、該当メッセージを自動削除
 - **anti-spam(連投荒らし)**: 短時間の連続投稿を検知して削除＋タイムアウト
 - **anti-raid**: 短時間の大量参加を検知してアラート＋サーバー認証レベルを自動引き上げ
-- **anti-nuke**: 同一ユーザーによるチャンネル/ロールの短時間大量削除・大量BANを検知し、
+- **anti-alt(捨てアカウント制限)**: アカウント作成から指定時間未満のユーザーの参加を自動キック
+- **anti-nuke**: 同一ユーザーによるチャンネル/ロールの短時間大量作成・削除、webhook作成、大量BANを検知し、
   自動でBANまたはロール剥奪
+- **`/lockdown` `/unlock`**: 現在のチャンネルで@everyoneの発言を即座に禁止/再許可
 - `/security whitelist-add` `/security whitelist-remove` でanti-nuke対象外ユーザーを管理
+
+### 🎫 チケットシステム `/ticket setup`
+指定チャンネルにボタン付きパネルを設置し、ユーザーがボタンを押すと専用のプライベートチャンネルが
+自動作成されます。`/ticket close`またはチケット内のボタンでチャンネルを閉じられます。
+
+### 🎉 ギブアウェイ `/giveaway`
+リアクション(🎉)形式の景品抽選を開催できます。`/giveaway-end`で即時終了・抽選も可能です。
+
+### 🎭 リアクションロール `/reactionrole add`
+指定メッセージへの絵文字リアクションでロールを自動付与/剥奪します。
+
+### 💤 便利機能いろいろ
+- `/afk` : 離席中に設定。メンションされると自動でお知らせし、発言すると自動解除
+- `/remind minutes:<> content:<>` : 指定分後にリマインド通知
+- `/poll question:<> options:<カンマ区切り>` : リアクション投票を作成
+- `/suggest setup` `/suggest new` : 提案システム(👍👎リアクション付き)
+- `/snipe` `/editsnipe` : 直近削除/編集されたメッセージをチャンネルごとに確認
+- `/welcome setup` `/welcome leave-setup` : 参加/退出メッセージ・自動ロール付与を設定
+
+### 🔄 起動通知
+Botが起動(再起動)すると、設定済みの全サーバーのログチャンネルへ「Dc_Sec Botが再起動しました。」という
+embedを自動送信します。
 
 ### 🔨 モデレーション
 `/kick` `/ban` `/unban` `/timeout` `/untimeout` `/warn` `/warnings` `/clearwarnings`
@@ -71,6 +107,7 @@ Botのアクティビティ表示（「〜を見ています」欄）を **10秒
 1. https://discord.com/developers/applications で新規アプリケーションを作成
 2. Bot タブでBotを作成し、トークンを取得
 3. **Privileged Gateway Intents** で以下を必ずON
+   - `PRESENCE INTENT`（/info user のオンライン状況・デバイス表示に必須）
    - `SERVER MEMBERS INTENT`
    - `MESSAGE CONTENT INTENT`
 4. OAuth2 > URL Generator で `bot` と `applications.commands` にチェックし、
@@ -128,13 +165,20 @@ discord-bot/
 ├── railway.json
 ├── .env.example
 ├── cogs/
-│   ├── sticky.py             # /stick /unstick
+│   ├── sticky.py             # /stick /unstick (プレーンテキスト)
 │   ├── logging_cog.py        # /log 強化ログ
 │   ├── bump_reminder.py      # /bump-mantion /up-mantion
-│   ├── security.py           # /security 系 anti-nuke等
+│   ├── security.py           # /security /lockdown /unlock 等
 │   ├── moderation.py         # kick/ban/timeout/warn/purge
 │   ├── utility.py            # ping/userinfo/serverinfo/avatar
-│   └── presence.py           # ステータス10秒ごとローテーション
+│   ├── presence.py           # ステータス10秒ごとローテーション
+│   ├── embed_builder.py      # /embed カスタムEmbed送信
+│   ├── welcome.py            # 参加/退出メッセージ・自動ロール
+│   ├── info.py                # /info user 詳細情報
+│   ├── extras.py              # afk/remind/poll/suggest/snipe
+│   ├── reaction_roles.py      # /reactionrole
+│   ├── giveaway.py            # /giveaway
+│   └── tickets.py             # /ticket チケットシステム
 └── utils/
     ├── database.py           # SQLite (aiosqlite) ラッパー
     └── checks.py             # 権限チェック共通処理
