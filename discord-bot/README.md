@@ -1,7 +1,8 @@
 # 多機能管理Bot (discord.py)
 
-Sticky message / 強化ログ / bump・up リマインダー / anti-nuke・anti-raid・anti-mention-spam などの
-セキュリティ機能をまとめた多機能Discord管理botです。GitHub + Railway での運用を想定しています。
+Sticky message / 強化ログ / bump・up リマインダー / anti-nuke・anti-raid・anti-mention-spam・
+外部アプリ(User Install App含む)スパム対策などのセキュリティ機能をまとめた多機能Discord管理botです。
+GitHub + Render（Web Service）/ Railway での運用を想定しています。
 
 ## 実装済み機能
 
@@ -47,18 +48,41 @@ Disboardの`/bump`が成功したメッセージを検知し、120分後の使�
 > `/up-mantion`側で監視するbotのIDは `.env` の `UP_BOT_ID` で設定してください
 > （デフォルトはディス速を想定した値ですが、**必ずご自身の環境で使っているbotのIDに書き換えて確認**してください）。
 
-### 🛡️ セキュリティ機能 `/security setup`
-- **anti-mention-spam**: 1メッセージ内のメンション数が閾値を超えたら削除＋タイムアウト
+### 🛡️ セキュリティ機能(`/security setup` `/security setup-content` `/security setup-advanced`)
+**基本 (`/security setup`)**
+- **anti-mention-spam**: 1メッセージ内のメンション数が閾値を超えたら削除＋処罰(**権限保持者も対象**＝乗っ取り対策)
 - **anti-invite**: 他サーバーへの招待リンク投稿を自動削除
-- **anti-phishing**: 既知の詐欺/フィッシングサイトの典型的なドメインパターンを自動削除
-- **NGワードフィルター**: `/security addword` `/security removeword` `/security wordlist` で単語を管理し、該当メッセージを自動削除
-- **anti-spam(連投荒らし)**: 短時間の連続投稿を検知して削除＋タイムアウト
+- **anti-phishing**: 既知の詐欺/フィッシングサイトのドメインパターン・短縮URL(bit.ly等)を自動削除
+- **anti-spam(連投荒らし)**: 短時間の連続投稿を検知して削除＋処罰
 - **anti-raid**: 短時間の大量参加を検知してアラート＋サーバー認証レベルを自動引き上げ
 - **anti-alt(捨てアカウント制限)**: アカウント作成から指定時間未満のユーザーの参加を自動キック
-- **anti-nuke**: 同一ユーザーによるチャンネル/ロールの短時間大量作成・削除、webhook作成、大量BANを検知し、
-  自動でBANまたはロール剥奪
-- **`/lockdown` `/unlock`**: 現在のチャンネルで@everyoneの発言を即座に禁止/再許可
+- **anti-nuke**: 同一ユーザーによるチャンネル/ロールの短時間大量作成・削除、webhook作成、大量BAN・大量キックを検知し自動でBAN
+
+**コンテンツフィルター (`/security setup-content`)**
+- **URL一律ブロック**: `/security urlwhitelist-add` で許可したドメイン以外のURLをすべて削除
+- **NGワードフィルター**: `/security addword` `/security removeword` `/security wordlist`
+- **anti-caps**: 大文字だらけの「叫び」メッセージを自動削除
+- **anti-emoji**: 絵文字の過剰投稿を自動削除
+- **anti-duplicate**: 同一内容メッセージの連続投稿(コピペ荒らし)を自動削除
+- **Zalgoフィルター**: 結合文字を悪用した崩し文字荒らしを自動削除
+- **@everyone/@here濫用検知**: **権限保持者を含めて**例外なく検知(アカウント乗っ取り対策)
+
+**高度な設定 (`/security setup-advanced`)**
+- **外部アプリ/Bot(User Install App含む)スパム対策**: サーバーに投稿されたメッセージが
+  外部アプリ・Bot・User Install App経由と判定された場合、専用の頻度しきい値で監視します。
+  違反を検知すると該当メッセージを削除し、**そのアプリを実行(インストール)した人物をDiscordの
+  インタラクション情報から特定してログに記録**、その人物を処罰します(アプリ自体はタイムアウトできないため)。
+- **権限昇格の自動監視**: ロールに管理者権限が不正に付与されたのを検知すると自動的に取り消し、
+  オーナーにDM通知(モデレーターアカウント乗っ取り対策)
+- **ストライク制(累積タイムアウト→警告→BAN)**: スパム系の理由でタイムアウトされた回数をユーザーごとに
+  記録し、**9回に達すると「次は警告なしでBANされます」という警告DMを送信**、**10回目のタイムアウトに
+  該当する行為が検知されると自動的にBAN**します(`/warn`と同様のトーンの警告文)。回数は
+  `/security strikes` `/security strikes-reset` で確認・リセット可能です。
 - `/security whitelist-add` `/security whitelist-remove` でanti-nuke対象外ユーザーを管理
+
+**チャンネル制御**
+- `/lockdown` `/unlock`: 現在のチャンネルで@everyoneの発言を即座に禁止/再許可
+- `/lockdown-all`: サーバー全体のテキストチャンネルを緊急一斉ロックダウン
 
 ### 🎫 チケットシステム `/ticket setup`
 指定チャンネルにボタン付きパネルを設置し、ユーザーがボタンを押すと専用のプライベートチャンネルが
@@ -142,7 +166,28 @@ git push -u origin main
 ```
 `.env` は `.gitignore` 済みなのでpushされません。
 
-### 4. Railwayでのデプロイ
+### 4. Renderでのデプロイ(Web Serviceとして運用する場合)
+RenderのWeb Serviceは常時ポートへの応答(ヘルスチェック)を要求するため、`main.py`は起動時に
+軽量なHTTPサーバー(`aiohttp`)を`$PORT`で自動的に立ち上げるようになっています。追加の設定は不要です。
+
+1. Render ダッシュボードで `New` → `Web Service` を選択し、GitHubリポジトリを連携
+   (リポジトリ直下に `render.yaml` があるので "Blueprint" からまとめてデプロイも可能です)
+2. 設定項目
+   - **Runtime**: Python 3
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `python main.py`
+   - **Health Check Path**: `/health`
+3. `Environment` タブで環境変数を設定
+   - `DISCORD_TOKEN`
+   - `GUILD_ID`（任意）
+   - `UP_BOT_ID`（必要に応じて変更）
+   - `PORT` は Render が自動的に注入するため通常は設定不要です（`main.py`が`$PORT`を自動で読み取ります。未設定時は`10000`番を使用）
+4. **データ永続化について**: RenderのFreeプランはファイルシステムが永続化されないため、
+   再デプロイ・再起動のたびに`bot.db`がリセットされます。設定を永続化したい場合は
+   Renderの **Persistent Disk**（有料）を追加し、`utils/database.py`の`DB_PATH`を
+   そのディスクのマウントパス（例: `/var/data/bot.db`）に変更してください。
+
+### 5. Railwayでのデプロイ（引き続き利用可能）
 1. Railway で `New Project` → `Deploy from GitHub repo` を選択し、このリポジトリを指定
 2. `Variables` タブで環境変数を設定
    - `DISCORD_TOKEN`
@@ -156,38 +201,74 @@ git push -u origin main
 
 ---
 
-## ディレクトリ構成
+## ファイルの配置場所(図)
+
+GitHubリポジトリの**ルート**（＝RenderやRailwayがそのままビルドする場所）は、以下の構成にしてください。
+`discord-bot`というフォルダをもう一段挟んではいけません。フォルダの中身をそのままリポジトリ直下に置きます。
+
 ```
-discord-bot/
-├── main.py                  # エントリーポイント
+（GitHubリポジトリのルート）
+│
+├── main.py                   ← 起動ファイル
 ├── requirements.txt
-├── Procfile
-├── railway.json
+├── Procfile                  ← Railway用
+├── railway.json               ← Railway用
+├── render.yaml                 ← Render用(Blueprintデプロイに使用)
 ├── .env.example
-├── cogs/
-│   ├── sticky.py             # /stick /unstick (プレーンテキスト)
-│   ├── logging_cog.py        # /log 強化ログ
-│   ├── bump_reminder.py      # /bump-mantion /up-mantion
-│   ├── security.py           # /security /lockdown /unlock 等
-│   ├── moderation.py         # kick/ban/timeout/warn/purge
-│   ├── utility.py            # ping/userinfo/serverinfo/avatar
-│   ├── presence.py           # ステータス10秒ごとローテーション
-│   ├── embed_builder.py      # /embed カスタムEmbed送信
-│   ├── welcome.py            # 参加/退出メッセージ・自動ロール
-│   ├── info.py                # /info user 詳細情報
-│   ├── extras.py              # afk/remind/poll/suggest/snipe
-│   ├── reaction_roles.py      # /reactionrole
-│   ├── giveaway.py            # /giveaway
-│   └── tickets.py             # /ticket チケットシステム
-└── utils/
-    ├── database.py           # SQLite (aiosqlite) ラッパー
-    └── checks.py             # 権限チェック共通処理
+├── .gitignore
+├── README.md
+│
+├── cogs/                      ← このフォルダを作って中に入れる
+│   ├── sticky.py               # /stick /unstick (プレーンテキスト)
+│   ├── logging_cog.py          # /log 強化ログ
+│   ├── bump_reminder.py        # /bump-mantion /up-mantion
+│   ├── security.py             # /security /lockdown /unlock 等
+│   ├── moderation.py           # kick/ban/timeout/warn/purge
+│   ├── utility.py              # ping/userinfo/serverinfo/avatar
+│   ├── presence.py             # ステータス10秒ごとローテーション
+│   ├── embed_builder.py        # /embed カスタムEmbed送信
+│   ├── welcome.py              # 参加/退出メッセージ・自動ロール
+│   ├── info.py                  # /info user 詳細情報
+│   ├── extras.py                # afk/remind/poll/suggest/snipe
+│   ├── reaction_roles.py        # /reactionrole
+│   ├── giveaway.py              # /giveaway
+│   └── tickets.py               # /ticket チケットシステム
+│
+└── utils/                     ← このフォルダを作って中に入れる
+    ├── database.py             # SQLite (aiosqlite) ラッパー
+    └── checks.py               # 権限チェック共通処理
 ```
 
+**手順**
+1. 空フォルダを作り、上記の`main.py`など直下のファイルをそのまま置く
+2. `cogs`という名前のフォルダを作り、`cogs/`以下の`.py`ファイルをすべてその中に入れる
+3. `utils`という名前のフォルダを作り、`database.py`と`checks.py`をその中に入れる
+4. フォルダ名・ファイル名は上記と完全に一致させる（`main.py`が`import cogs.sticky`のように
+   名前で読み込んでいるため、ズレると起動エラーになります）
+5. GitHubにpushしたら、Render/Railway側の「Root Directory」設定は**空欄のまま**でOKです
+   （最初からリポジトリ直下にファイルがあるため）
+
 ## 注意事項
-- `/log` `/bump-mantion` `/up-mantion` `/security setup` は `管理者` または該当の管理権限を
+- `/log` `/bump-mantion` `/up-mantion` `/security setup*` は `管理者` または該当の管理権限を
   持つメンバーのみ実行できます。
-- anti-nuke機能はサーバーオーナー・管理者権限保持者には作動しません（誤BAN防止のため）。
-  信頼できる運営メンバーは `/security whitelist-add` で明示的に除外してください。
-- メッセージ内容を取得するために `MESSAGE CONTENT INTENT` が必須です。未設定だとsticky機能や
-  ログ機能の一部が正しく動作しません。
+- **管理者権限保持者のバイパス範囲**: NGワード・URL遮断・caps・絵文字・重複投稿・Zalgo・招待リンク・
+  フィッシング検知は誤検知防止のため管理者を対象外にしていますが、**メンションスパムと@everyone/@here濫用
+  検知は管理者・モデレーターアカウントでも例外なく検知します**（アカウント乗っ取り対策のため）。
+- anti-nuke機能はサーバーオーナーには作動しません（誤BAN防止のため）。信頼できる運営メンバーは
+  `/security whitelist-add` で明示的に除外してください。
+- メッセージ内容を取得するために `MESSAGE CONTENT INTENT` が必須です。オンライン状況取得には
+  `PRESENCE INTENT` も必須です。未設定だと一部機能が正しく動作しません。
+- 外部アプリ/User Install Appのスパム対策は、Discordの`interaction_metadata`（discord.py 2.4以降で
+  利用可能）を用いて実行者を特定します。古いdiscord.pyバージョンでは実行者情報が取得できない場合があります。
+
+## `/stick`がembedのまま/文言が付いて届く場合のチェックリスト
+現在のコード（`cogs/sticky.py`）は完全にプレーンテキスト送信（`channel.send(msg)`）のみで、
+embedも「自動で下に移動します」等の文言も一切含まれていません。それでも古い挙動のまま届く場合は、
+以下を順番に確認してください。
+1. **デプロイ環境に最新のファイルが反映されているか**: 特に`cogs/sticky.py`が今回配布したものと
+   一致しているか、Render/Railwayのビルドログでファイルの更新日時を確認してください。
+2. **ビルドキャッシュが古い**: Render/Railwayの管理画面から「Clear build cache」→ 再デプロイを行ってください。
+3. **既存のスティックメッセージは自動で変わらない**: 修正前のコードで送信済みのスティックメッセージ
+   (embed版)は、コードを直しただけでは自動的に書き換わりません。該当チャンネルで一度 `/unstick` →
+   `/stick msg:<内容>` を実行し、新しいプレーンテキスト版を作り直してください。
+4. 上記を行っても改善しない場合は、`cogs/sticky.py`の内容をそのまま貼り付けて教えてください。
