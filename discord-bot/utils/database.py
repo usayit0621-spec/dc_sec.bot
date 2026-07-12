@@ -45,7 +45,36 @@ CREATE TABLE IF NOT EXISTS automod_config (
     min_account_age_hours INTEGER DEFAULT 24,
     word_filter_enabled INTEGER DEFAULT 0,
     anti_phishing_enabled INTEGER DEFAULT 1,
-    locked INTEGER DEFAULT 0
+    locked INTEGER DEFAULT 0,
+    anti_caps_enabled INTEGER DEFAULT 0,
+    caps_threshold INTEGER DEFAULT 70,
+    anti_emoji_enabled INTEGER DEFAULT 0,
+    emoji_limit INTEGER DEFAULT 10,
+    anti_duplicate_enabled INTEGER DEFAULT 1,
+    owner_dm_alerts INTEGER DEFAULT 1,
+    panic_mode INTEGER DEFAULT 0,
+    anti_perm_escalation INTEGER DEFAULT 1,
+    block_urls_enabled INTEGER DEFAULT 0,
+    zalgo_filter_enabled INTEGER DEFAULT 1,
+    everyone_abuse_enabled INTEGER DEFAULT 1,
+    app_spam_enabled INTEGER DEFAULT 1,
+    app_spam_count INTEGER DEFAULT 6,
+    app_spam_seconds INTEGER DEFAULT 8,
+    strike_warn_threshold INTEGER DEFAULT 9,
+    strike_ban_threshold INTEGER DEFAULT 10
+);
+
+CREATE TABLE IF NOT EXISTS url_whitelist (
+    guild_id INTEGER NOT NULL,
+    domain TEXT NOT NULL,
+    PRIMARY KEY (guild_id, domain)
+);
+
+CREATE TABLE IF NOT EXISTS spam_strikes (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    count INTEGER DEFAULT 0,
+    PRIMARY KEY (guild_id, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS whitelist (
@@ -486,3 +515,48 @@ class Database:
         cur = await self.conn.execute("SELECT channel_id FROM suggest_config WHERE guild_id=?", (guild_id,))
         row = await cur.fetchone()
         return row["channel_id"] if row else None
+
+    # ---------- url whitelist ----------
+    async def add_url_whitelist(self, guild_id, domain):
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO url_whitelist (guild_id, domain) VALUES (?,?)", (guild_id, domain.lower())
+        )
+        await self.conn.commit()
+
+    async def remove_url_whitelist(self, guild_id, domain):
+        await self.conn.execute(
+            "DELETE FROM url_whitelist WHERE guild_id=? AND domain=?", (guild_id, domain.lower())
+        )
+        await self.conn.commit()
+
+    async def get_url_whitelist(self, guild_id):
+        cur = await self.conn.execute("SELECT domain FROM url_whitelist WHERE guild_id=?", (guild_id,))
+        rows = await cur.fetchall()
+        return [r["domain"] for r in rows]
+
+    # ---------- spam strikes(スパム系タイムアウトの累積回数) ----------
+    async def increment_strike(self, guild_id, user_id):
+        await self.conn.execute(
+            "INSERT INTO spam_strikes (guild_id, user_id, count) VALUES (?,?,1) "
+            "ON CONFLICT(guild_id, user_id) DO UPDATE SET count = count + 1",
+            (guild_id, user_id),
+        )
+        await self.conn.commit()
+        cur = await self.conn.execute(
+            "SELECT count FROM spam_strikes WHERE guild_id=? AND user_id=?", (guild_id, user_id)
+        )
+        row = await cur.fetchone()
+        return row["count"] if row else 0
+
+    async def get_strikes(self, guild_id, user_id):
+        cur = await self.conn.execute(
+            "SELECT count FROM spam_strikes WHERE guild_id=? AND user_id=?", (guild_id, user_id)
+        )
+        row = await cur.fetchone()
+        return row["count"] if row else 0
+
+    async def reset_strikes(self, guild_id, user_id):
+        await self.conn.execute(
+            "DELETE FROM spam_strikes WHERE guild_id=? AND user_id=?", (guild_id, user_id)
+        )
+        await self.conn.commit()
