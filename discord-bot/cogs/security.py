@@ -8,6 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from utils.checks import is_admin, is_manage_guild
+from utils.backup import upload_backup
 
 INVITE_RE = re.compile(r"(discord\.gg/|discord(?:app)?\.com/invite/)[a-zA-Z0-9-]+", re.IGNORECASE)
 
@@ -190,6 +191,7 @@ class Security(commands.Cog):
         embed.add_field(name="anti-phishing", value=str(anti_phishing), inline=True)
         embed.set_footer(text="さらに詳細な設定は /security setup-content と /security setup-advanced で行えます")
         await interaction.response.send_message(embed=embed, ephemeral=True)
+        await upload_backup(self.bot)
 
     @security.command(name="setup-content", description="メッセージ内容に対するフィルター系のセキュリティ機能を設定します")
     @app_commands.describe(
@@ -234,6 +236,7 @@ class Security(commands.Cog):
         embed.add_field(name="Zalgoフィルター", value=str(zalgo_filter), inline=True)
         embed.add_field(name="@everyone濫用検知(権限者含む)", value=str(everyone_abuse), inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
+        await upload_backup(self.bot)
 
     @security.command(name="setup-advanced", description="外部アプリ対策・権限昇格監視・ストライク制などの高度な設定を行います")
     @app_commands.describe(
@@ -274,18 +277,21 @@ class Security(commands.Cog):
         embed.add_field(name="警告DMを送るストライク数", value=str(strike_warn_threshold), inline=True)
         embed.add_field(name="自動BANするストライク数", value=str(strike_ban_threshold), inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
+        await upload_backup(self.bot)
 
     @security.command(name="addword", description="NGワードフィルターに単語を追加します")
     @is_manage_guild()
     async def add_word(self, interaction: discord.Interaction, word: str):
         await self.bot.db.add_blacklist_word(interaction.guild_id, word)
         await interaction.response.send_message(f"✅ NGワードに `{word}` を追加しました。", ephemeral=True)
+        await upload_backup(self.bot)
 
     @security.command(name="removeword", description="NGワードフィルターから単語を削除します")
     @is_manage_guild()
     async def remove_word(self, interaction: discord.Interaction, word: str):
         await self.bot.db.remove_blacklist_word(interaction.guild_id, word)
         await interaction.response.send_message(f"✅ NGワードから `{word}` を削除しました。", ephemeral=True)
+        await upload_backup(self.bot)
 
     @security.command(name="wordlist", description="現在のNGワード一覧を表示します")
     @is_manage_guild()
@@ -301,12 +307,14 @@ class Security(commands.Cog):
     async def url_whitelist_add(self, interaction: discord.Interaction, domain: str):
         await self.bot.db.add_url_whitelist(interaction.guild_id, domain)
         await interaction.response.send_message(f"✅ `{domain}` をURLホワイトリストに追加しました。", ephemeral=True)
+        await upload_backup(self.bot)
 
     @security.command(name="urlwhitelist-remove", description="URLブロックのホワイトリストからドメインを削除します")
     @is_manage_guild()
     async def url_whitelist_remove(self, interaction: discord.Interaction, domain: str):
         await self.bot.db.remove_url_whitelist(interaction.guild_id, domain)
         await interaction.response.send_message(f"✅ `{domain}` をURLホワイトリストから削除しました。", ephemeral=True)
+        await upload_backup(self.bot)
 
     @security.command(name="strikes", description="指定ユーザーの累積スパムストライク数を確認します")
     @is_manage_guild()
@@ -319,18 +327,21 @@ class Security(commands.Cog):
     async def strikes_reset(self, interaction: discord.Interaction, user: discord.Member):
         await self.bot.db.reset_strikes(interaction.guild_id, user.id)
         await interaction.response.send_message(f"✅ {user.mention} のストライクをリセットしました。", ephemeral=True)
+        await upload_backup(self.bot)
 
     @security.command(name="whitelist-add", description="anti-nuke対策の対象外にするユーザーを追加します")
     @is_admin()
     async def whitelist_add(self, interaction: discord.Interaction, user: discord.Member):
         await self.bot.db.add_whitelist(interaction.guild_id, user.id)
         await interaction.response.send_message(f"✅ {user.mention} をホワイトリストに追加しました。", ephemeral=True)
+        await upload_backup(self.bot)
 
     @security.command(name="whitelist-remove", description="anti-nuke対策のホワイトリストからユーザーを削除します")
     @is_admin()
     async def whitelist_remove(self, interaction: discord.Interaction, user: discord.Member):
         await self.bot.db.remove_whitelist(interaction.guild_id, user.id)
         await interaction.response.send_message(f"✅ {user.mention} をホワイトリストから削除しました。", ephemeral=True)
+        await upload_backup(self.bot)
 
     @app_commands.command(name="lockdown", description="このチャンネルで@everyoneの発言を禁止します")
     @is_manage_guild()
