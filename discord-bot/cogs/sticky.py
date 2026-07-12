@@ -4,13 +4,13 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from utils.checks import is_manage_messages, SUCCESS_COLOR, JST_EMBED_COLOR
+from utils.checks import is_manage_messages
 
 DEBOUNCE_SECONDS = 2.0
 
 
 class Sticky(commands.Cog):
-    """/stick で指定したメッセージをチャンネル下部に固定し続ける機能"""
+    """/stick で指定したメッセージをチャンネル下部に固定し続ける機能(プレーンテキスト送信)"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -26,16 +26,7 @@ class Sticky(commands.Cog):
                 "guild_id": row["guild_id"],
             }
 
-    def _build_embed(self, content: str) -> discord.Embed:
-        embed = discord.Embed(
-            title="📌 固定メッセージ",
-            description=content,
-            color=JST_EMBED_COLOR,
-        )
-        embed.set_footer(text="このメッセージは自動で最新の位置に移動します")
-        return embed
-
-    @app_commands.command(name="stick", description="指定したメッセージをこのチャンネルの下部に固定します")
+    @app_commands.command(name="stick", description="指定したメッセージをこのチャンネルの下部にそのまま固定します")
     @app_commands.describe(msg="固定したいメッセージの内容")
     @is_manage_messages()
     async def stick(self, interaction: discord.Interaction, msg: str):
@@ -50,7 +41,7 @@ class Sticky(commands.Cog):
             except (discord.NotFound, discord.HTTPException):
                 pass
 
-        sent = await channel.send(embed=self._build_embed(msg))
+        sent = await channel.send(msg)
         await self.bot.db.set_sticky(channel.id, interaction.guild_id, sent.id, msg)
         self.cache[channel.id] = {"message_id": sent.id, "content": msg, "guild_id": interaction.guild_id}
 
@@ -107,7 +98,7 @@ class Sticky(commands.Cog):
             pass
 
         try:
-            sent = await channel.send(embed=self._build_embed(data["content"]))
+            sent = await channel.send(data["content"])
         except discord.HTTPException:
             return
 
