@@ -31,6 +31,31 @@ INTENTS.voice_states = True
 INTENTS.moderation = True
 INTENTS.invites = True
 INTENTS.presences = True  # /info user でオンライン状況・デバイス種別を取得するために必要
+# main.py のデータベース接続後のイメージ
+
+# 1. データベースに接続
+# [INFO] bot: データベース接続完了
+
+# 2. 【重要】ここにテーブル作成処理を入れる（なければ追加、順序が逆なら上に持ってくる）
+await db.conn.execute("""
+    CREATE TABLE IF NOT EXISTS bump_templates (
+        ...
+    )
+""")
+await db.conn.execute("""
+    CREATE TABLE IF NOT EXISTS levels (
+        ...
+    )
+""")
+await db.conn.execute("""
+    CREATE TABLE IF NOT EXISTS level_rewards (
+        ...
+    )
+""")
+await db.conn.commit()
+
+# 3. この後に cogs の読み込みやバックアップ（backup.py）の処理を実行する
+
 
 EXTENSIONS = [
     "cogs.sticky",
