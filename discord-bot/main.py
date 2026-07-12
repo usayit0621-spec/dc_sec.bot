@@ -27,6 +27,7 @@ INTENTS.guilds = True
 INTENTS.voice_states = True
 INTENTS.moderation = True
 INTENTS.invites = True
+INTENTS.presences = True  # /info user でオンライン状況・デバイス種別を取得するために必要
 
 EXTENSIONS = [
     "cogs.sticky",
@@ -36,6 +37,13 @@ EXTENSIONS = [
     "cogs.moderation",
     "cogs.utility",
     "cogs.presence",
+    "cogs.embed_builder",
+    "cogs.welcome",
+    "cogs.info",
+    "cogs.extras",
+    "cogs.reaction_roles",
+    "cogs.giveaway",
+    "cogs.tickets",
 ]
 
 
@@ -43,6 +51,7 @@ class MultiBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="mb!", intents=INTENTS, help_command=None)
         self.db = Database()
+        self._restart_announced = False
 
     async def setup_hook(self):
         await self.db.connect()
@@ -67,6 +76,30 @@ class MultiBot(commands.Bot):
     async def on_ready(self):
         log.info(f"ログイン完了: {self.user} (ID: {self.user.id})")
         # ステータス表示は cogs/presence.py が10秒ごとにローテーションします
+
+        if not self._restart_announced:
+            self._restart_announced = True
+            await self._announce_restart()
+
+    async def _announce_restart(self):
+        rows = await self.db.get_all_log_channels()
+        embed = discord.Embed(
+            title="🔄 再起動しました",
+            description="Dc_Sec Botが再起動しました。",
+            color=discord.Color.blurple(),
+            timestamp=discord.utils.utcnow(),
+        )
+        for row in rows:
+            guild = self.get_guild(row["guild_id"])
+            if not guild:
+                continue
+            channel = guild.get_channel(row["channel_id"])
+            if not channel:
+                continue
+            try:
+                await channel.send(embed=embed)
+            except discord.HTTPException:
+                pass
 
     async def close(self):
         await self.db.close()
