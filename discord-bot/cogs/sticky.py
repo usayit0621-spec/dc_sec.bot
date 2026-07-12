@@ -5,6 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from utils.checks import is_manage_messages
+from utils.backup import upload_backup
 
 DEBOUNCE_SECONDS = 2.0
 
@@ -46,6 +47,7 @@ class Sticky(commands.Cog):
         self.cache[channel.id] = {"message_id": sent.id, "content": msg, "guild_id": interaction.guild_id}
 
         await interaction.followup.send("✅ スティックメッセージを設定しました。", ephemeral=True)
+        await upload_backup(self.bot)
 
     @app_commands.command(name="unstick", description="このチャンネルのスティックメッセージを解除します")
     @is_manage_messages()
@@ -61,6 +63,7 @@ class Sticky(commands.Cog):
             except (discord.NotFound, discord.HTTPException):
                 pass
             await interaction.response.send_message("✅ スティックメッセージを解除しました。", ephemeral=True)
+            await upload_backup(self.bot)
         else:
             await interaction.response.send_message("このチャンネルにはスティックメッセージが設定されていません。", ephemeral=True)
 
