@@ -5,6 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from utils.checks import is_manage_guild
+from utils.backup import upload_backup
 
 DELETE_COLOR = discord.Color.red()
 EDIT_COLOR = discord.Color.orange()
@@ -91,8 +92,7 @@ class LoggingCog(commands.Cog):
             color=discord.Color.green(),
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    # ---------------- message events ----------------
+        await upload_backup(self.bot)    # ---------------- message events ----------------
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message):
         if not message.guild:
