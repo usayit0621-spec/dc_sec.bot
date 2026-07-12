@@ -4,11 +4,12 @@ import os
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
-from aiohttp import web  # Webサーバー用に追加
+from aiohttp import web
 
 from utils.database import Database
+from utils.backup import upload_backup, restore_backup
 
 load_dotenv()
 
@@ -20,7 +21,7 @@ log = logging.getLogger("bot")
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = os.getenv("GUILD_ID")
-PORT = os.getenv("PORT", "8080")  # Renderが指定するポート（デフォルト8080）
+PORT = int(os.getenv("PORT", "10000"))  # RenderのWeb Serviceはこのポートへのヘルスチェックを要求する
 
 INTENTS = discord.Intents.default()
 INTENTS.message_content = True
@@ -46,6 +47,7 @@ EXTENSIONS = [
     "cogs.reaction_roles",
     "cogs.giveaway",
     "cogs.tickets",
+    "cogs.leveling",
 ]
 
 
@@ -58,6 +60,11 @@ class MultiBot(commands.Bot):
     async def setup_hook(self):
         await self.db.connect()
         log.info("データベース接続完了")
+
+        try:
+            await restore_backup(self)
+        except Exception:
+            log.exception("バックアップ復元処理中にエラーが発生しました(新規状態のまま続行します)")
 
         for ext in EXTENSIONS:
             try:
@@ -83,6 +90,18 @@ class MultiBot(commands.Bot):
             self._restart_announced = True
             await self._announce_restart()
 
+        if not self.backup_loop.is_running():
+            self.backup_loop.start()
+
+    @tasks.loop(minutes=10)
+    async def backup_loop(self):
+        """設定変更コマンド以外の細かな更新も定期的にバックアップチャンネルへ保存する(安全網)"""
+        await upload_backup(self)
+
+    @backup_loop.before_loop
+    async def before_backup_loop(self):
+        await self.wait_until_ready()
+
     async def _announce_restart(self):
         rows = await self.db.get_all_log_channels()
         embed = discord.Embed(
@@ -104,6 +123,8 @@ class MultiBot(commands.Bot):
                 pass
 
     async def close(self):
+        if self.backup_loop.is_running():
+            self.backup_loop.cancel()
         await self.db.close()
         await super().close()
 
@@ -132,31 +153,28 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         pass
 
 
-# --- Renderのポート解放・keep-alive応答用のWebサーバー設定 ---
-async def handle_ping(request):
-    """自家端末からのkeep-aliveリクエストにOKを返す"""
-    return web.Response(text="Bot is alive!", status=200)
+async def handle_health(request: web.Request):
+    return web.json_response({"status": "ok", "bot": str(bot.user) if bot.user else "starting"})
 
-async def start_web_server():
-    """バックグラウンドでHTTPサーバーを起動する"""
+
+async def start_webserver():
+    """RenderのWeb Serviceはポートへの応答を要求するため、常駐する軽量HTTPサーバーを立てる"""
     app = web.Application()
-    app.router.add_get("/", handle_ping)
+    app.router.add_get("/", handle_health)
+    app.router.add_get("/health", handle_health)
+    app.router.add_get("/healthz", handle_health)
     runner = web.AppRunner(app)
     await runner.setup()
-    # Renderが指定する 0.0.0.0 と PORT 環境変数でバインド
-    site = web.TCPSite(runner, "0.0.0.0", int(PORT))
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    log.info(f"Webサーバーがポート {PORT} で起動しました。外部からのPingを受付可能です。")
-# --------------------------------------------------------
+    log.info(f"ヘルスチェック用Webサーバーを起動しました (0.0.0.0:{PORT})")
 
 
 async def main():
     if not TOKEN:
         raise RuntimeError("環境変数 DISCORD_TOKEN が設定されていません。")
-    
-    # Discord BotとWebサーバーを並行して起動
+    await start_webserver()
     async with bot:
-        await start_web_server()  # Webサーバーを先に起動
         await bot.start(TOKEN)
 
 
