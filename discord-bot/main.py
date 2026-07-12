@@ -6,6 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
+from aiohttp import web  # Webサーバー用に追加
 
 from utils.database import Database
 
@@ -19,6 +20,7 @@ log = logging.getLogger("bot")
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = os.getenv("GUILD_ID")
+PORT = os.getenv("PORT", "8080")  # Renderが指定するポート（デフォルト8080）
 
 INTENTS = discord.Intents.default()
 INTENTS.message_content = True
@@ -130,10 +132,31 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         pass
 
 
+# --- Renderのポート解放・keep-alive応答用のWebサーバー設定 ---
+async def handle_ping(request):
+    """自家端末からのkeep-aliveリクエストにOKを返す"""
+    return web.Response(text="Bot is alive!", status=200)
+
+async def start_web_server():
+    """バックグラウンドでHTTPサーバーを起動する"""
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    # Renderが指定する 0.0.0.0 と PORT 環境変数でバインド
+    site = web.TCPSite(runner, "0.0.0.0", int(PORT))
+    await site.start()
+    log.info(f"Webサーバーがポート {PORT} で起動しました。外部からのPingを受付可能です。")
+# --------------------------------------------------------
+
+
 async def main():
     if not TOKEN:
         raise RuntimeError("環境変数 DISCORD_TOKEN が設定されていません。")
+    
+    # Discord BotとWebサーバーを並行して起動
     async with bot:
+        await start_web_server()  # Webサーバーを先に起動
         await bot.start(TOKEN)
 
 
