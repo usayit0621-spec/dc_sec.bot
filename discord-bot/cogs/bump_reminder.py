@@ -1,5 +1,6 @@
 import re
 import time
+import logging
 
 import discord
 from discord import app_commands
@@ -8,6 +9,8 @@ from discord.ext import commands, tasks
 from utils.checks import is_manage_guild
 from utils.leveling import apply_level_change
 from utils.backup import upload_backup
+
+log = logging.getLogger("bump_reminder")
 
 CYCLE_SECONDS = 120 * 60  # 2時間
 
@@ -59,67 +62,86 @@ class BumpReminder(commands.Cog):
     # which delegate to this cog's _register_template method.
 
     async def _register_template(self, interaction: discord.Interaction, message: discord.Message, type_: str, label: str):
-        if not message.guild:
-            await interaction.response.send_message("サーバー内のメッセージのみ登録できます。", ephemeral=True)
-            return
-        if not message.author.bot:
-            await interaction.response.send_message("Bot(Disboard/ディス速等)が送信したメッセージを右クリックして登録してください。", ephemeral=True)
-            return
+        try:
+            if not message.guild:
+                await interaction.response.send_message("サーバー内のメッセージのみ登録できます。", ephemeral=True)
+                return
+            if not message.author.bot:
+                await interaction.response.send_message("Bot(Disboard/ディス速等)が送信したメッセージを右クリックして登録してください。", ephemeral=True)
+                return
 
-        template = build_template_text(message)
-        if not template:
-            await interaction.response.send_message("このメッセージにはテキスト内容がなく、テンプレートとして登録できません。", ephemeral=True)
-            return
+            template = build_template_text(message)
+            if not template:
+                await interaction.response.send_message("このメッセージにはテキスト内容がなく、テンプレートとして登録できません。", ephemeral=True)
+                return
 
-        await self.bot.db.set_bump_template(interaction.guild_id, type_, message.author.id, template)
-        await self.bot.db.ensure_reminder_config(interaction.guild_id, type_, message.channel.id)
+            # persist template and ensure reminder config
+            await self.bot.db.set_bump_template(interaction.guild_id, type_, message.author.id, template)
+            await self.bot.db.ensure_reminder_config(interaction.guild_id, type_, message.channel.id)
 
-        embed = discord.Embed(
-            title=f"✅ {label}成功メッセージを登録しました",
-            description=(
-                f"今後 {message.author.mention} から同じ形式のメッセージが送信されると、自動的に検知して\n"
-                f"・2時間後のクールダウンタイマー開始\n"
-                "・RTAタイム計測\n"
-                "・実行者へのレベル付与\n"
-                "を行います。通知ロール/通知チャンネルは `/bump-mantion` `/up-mantion` で別途設定してください。"
-            ),
-            color=discord.Color.green(),
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        await upload_backup(self.bot)
+            embed = discord.Embed(
+                title=f"✅ {label}成功メッセージを登録しました",
+                description=(
+                    f"今後 {message.author.mention} から同じ形式のメッセージが送信されると、自動的に検知して\n"
+                    f"・2時間後のクールダウンタイマー開始\n"
+                    "・RTAタイム計測\n"
+                    "・実行者へのレベル付与\n"
+                    "を行います。通知ロール/通知チャンネルは `/bump-mantion` `/up-mantion` で別途設定してください。"
+                ),
+                color=discord.Color.green(),
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await upload_backup(self.bot)
+        except Exception:
+            log.exception("_register_template failed")
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send("❌ 内部エラーが発生しました。ログを確認してください。", ephemeral=True)
+                else:
+                    await interaction.response.send_message("❌ 内部エラーが発生しました。ログを確認してください。", ephemeral=True)
+            except Exception:
+                pass
 
     # ---------------- リマインダー設定コマンド(形式は変更なし) ----------------
     @app_commands.command(name="bump-mantion", description="登録済みのBump成功メッセージが検知される前に通知するリマインダーを設定します")
     @app_commands.describe(min="何分前に通知するか", m="通知したいロールをメンション")
     @is_manage_guild()
     async def bump_mantion(self, interaction: discord.Interaction, min: app_commands.Range[int, 0, 119], m: discord.Role):
-        await self.bot.db.set_reminder_config(interaction.guild_id, "bump", interaction.channel_id, m.id, min)
-        embed = discord.Embed(
-            title="✅ bumpリマインダーを設定しました",
-            description=(
-                f"このチャンネルで {m.mention} に、次回bump可能時刻の **{min}分前** に通知します。\n"
-                "先に対象メッセージを右クリック→アプリ→「Bumpメッセージに設定」で登録しておいてください（未登録でも設定は保存されます）[...]"
-            ),
-            color=discord.Color.green(),
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        await upload_backup(self.bot)
+        try:
+            await self.bot.db.set_reminder_config(interaction.guild_id, "bump", interaction.channel_id, m.id, min)
+            embed = discord.Embed(
+                title="✅ bumpリマインダーを設定しました",
+                description=(
+                    f"このチャンネルで {m.mention} に、次回bump可能時刻の **{min}分前** に通知します。\n"
+                    "先に対象メッセージを右クリック→アプリ→「Bumpメッセージに設定」で登録しておいてください（未登録でも設定は保存されます）"
+                ),
+                color=discord.Color.green(),
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await upload_backup(self.bot)
+        except Exception:
+            log.exception("bump_mantion failed")
+            await interaction.response.send_message("❌ 内部エラーが発生しました。ログを確認してください。", ephemeral=True)
 
     @app_commands.command(name="up-mantion", description="登録済みのUp成功メッセージが検知される前に通知するリマインダーを設定します")
     @app_commands.describe(min="何分前に通知するか", m="通知したいロールをメンション")
     @is_manage_guild()
     async def up_mantion(self, interaction: discord.Interaction, min: app_commands.Range[int, 0, 119], m: discord.Role):
-        await self.bot.db.set_reminder_config(interaction.guild_id, "up", interaction.channel_id, m.id, min)
-        embed = discord.Embed(
-            title="✅ upリマインダーを設定しました",
-            description=(
-                f"このチャンネルで {m.mention} に、次回up可能時刻の **{min}分前** に通知します。\n"
-                "先に対象メッセージを右クリック→アプリ→「Upメッセージに設定」で登録しておいてください（未登録でも設定は保存されます）��[...]"
-            ),
-            color=discord.Color.green(),
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        await upload_backup(self.bot)
+        try:
+            await self.bot.db.set_reminder_config(interaction.guild_id, "up", interaction.channel_id, m.id, min)
+            embed = discord.Embed(
+                title="✅ upリマインダーを設定しました",
+                description=(
+                    f"このチャンネルで {m.mention} に、次回up可能時刻の **{min}分前** に通知します。\n"
+                    "先に対象メッセージを右クリック→アプリ→「Upメッセージに設定」で登録しておいてください（未登録でも設定は保存されます）"
+                ),
+                color=discord.Color.green(),
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await upload_backup(self.bot)
+        except Exception:
+            log.exception("up_mantion failed")
+            await interaction.response.send_message("❌ 内部エラーが発生しました。ログを確認してください。", ephemeral=True)
 
     # ---------------- 実行者の特定(外部アプリ/インタラクション経由) ----------------
     def _get_interaction_user(self, message: discord.Message):
