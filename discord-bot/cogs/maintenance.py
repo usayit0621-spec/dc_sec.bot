@@ -100,7 +100,7 @@ class Maintenance(commands.Cog):
             rev = "unknown"
         await interaction.response.send_message(f"commit: `{rev}`")
 
-    @app_commands.command(name="reload-cogs", description="指定または全てのcogを再読み込みします(ボットオーナー���み)")
+    @app_commands.command(name="reload-cogs", description="指定または全てのcogを再読み込みします(ボットオーナーのみ)")
     async def reload_cogs(self, interaction: discord.Interaction, cog: str = None):
         # owner-only check
         is_owner = await self.bot.is_owner(interaction.user)
@@ -119,9 +119,10 @@ class Maintenance(commands.Cog):
                 log.exception("failed reload %s", t)
                 results.append((t, False, str(e)))
         msg = "".join([f"{t}: {'OK' if ok else 'ERR'}\n" for t, ok, _ in results])
-        await interaction.followup.send(f"```
+        # send as a fenced code block safely
+        await interaction.followup.send(f"""```
 {msg}
-```", ephemeral=True)
+```""", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
