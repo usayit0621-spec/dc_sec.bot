@@ -1,5 +1,6 @@
 import subprocess
 import logging
+import os
 
 import discord
 from discord import app_commands
@@ -54,6 +55,42 @@ class Maintenance(commands.Cog):
             log.exception("db-migrate failed")
             await interaction.followup.send("❌ DBマイグレーションに失敗しました。ログを確認してください。", ephemeral=True)
 
+    @app_commands.command(name="sync-commands", description="スラッシュコマンドを即時同期します (scope: guild/global). guildでは GUILD_ID 環境変数または guild_id 引数を使用")
+    @app_commands.choices(scope=[
+        app_commands.Choice(name="guild", value="guild"),
+        app_commands.Choice(name="global", value="global"),
+    ])
+    @is_admin()
+    async def sync_commands(
+        self,
+        interaction: discord.Interaction,
+        scope: app_commands.Choice[str] = None,
+        guild_id: int = None,
+    ):
+        """Force-sync application commands.
+
+        Parameters:
+        - scope: 'guild' or 'global'. If omitted, defaults to 'guild' when GUILD_ID env is set, otherwise 'global'.
+        - guild_id: optional numeric guild id to use when scope is 'guild'.
+        """
+        await interaction.response.defer(ephemeral=True)
+        try:
+            scope_value = scope.value if scope else ("guild" if os.getenv("GUILD_ID") else "global")
+            if scope_value == "guild":
+                gid = guild_id or (int(os.getenv("GUILD_ID")) if os.getenv("GUILD_ID") else None)
+                if gid is None:
+                    await interaction.followup.send("ギルドIDを指定するか GUILD_ID 環境変数を設定してください。", ephemeral=True)
+                    return
+                guild = discord.Object(id=gid)
+                synced = await self.bot.tree.sync(guild=guild)
+                await interaction.followup.send(f"ギルドコマンド同期: {len(synced)} 件 (guild={gid})", ephemeral=True)
+            else:
+                synced = await self.bot.tree.sync()
+                await interaction.followup.send(f"グローバルコマンド同期: {len(synced)} 件", ephemeral=True)
+        except Exception as e:
+            log.exception("sync-commands failed")
+            await interaction.followup.send(f"❌ 同期に失敗しました: {e}", ephemeral=True)
+
     @app_commands.command(name="version", description="Botのバージョン(コミットSHA)を表示します")
     async def version(self, interaction: discord.Interaction):
         try:
@@ -63,7 +100,7 @@ class Maintenance(commands.Cog):
             rev = "unknown"
         await interaction.response.send_message(f"commit: `{rev}`")
 
-    @app_commands.command(name="reload-cogs", description="指定または全てのcogを再読み込みします(ボットオーナーのみ)")
+    @app_commands.command(name="reload-cogs", description="指定または全てのcogを再読み込みします(ボットオーナー���み)")
     async def reload_cogs(self, interaction: discord.Interaction, cog: str = None):
         # owner-only check
         is_owner = await self.bot.is_owner(interaction.user)
