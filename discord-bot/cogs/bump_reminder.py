@@ -54,16 +54,9 @@ class BumpReminder(commands.Cog):
     def cog_unload(self):
         self.checker.cancel()
 
-    # ---------------- メッセージ登録用コンテキストメニュー ----------------
-    @app_commands.context_menu(name="Bumpメッセージに設定")
-    @is_manage_guild()
-    async def register_bump_template(self, interaction: discord.Interaction, message: discord.Message):
-        await self._register_template(interaction, message, "bump", "Bump")
-
-    @app_commands.context_menu(name="Upメッセージに設定")
-    @is_manage_guild()
-    async def register_up_template(self, interaction: discord.Interaction, message: discord.Message):
-        await self._register_template(interaction, message, "up", "Up")
+    # NOTE: context menus cannot be defined inside a Cog class (discord.py restriction).
+    # The actual context-menu callbacks are implemented as module-level commands below
+    # which delegate to this cog's _register_template method.
 
     async def _register_template(self, interaction: discord.Interaction, message: discord.Message, type_: str, label: str):
         if not message.guild:
@@ -105,7 +98,7 @@ class BumpReminder(commands.Cog):
             title="✅ bumpリマインダーを設定しました",
             description=(
                 f"このチャンネルで {m.mention} に、次回bump可能時刻の **{min}分前** に通知します。\n"
-                "先に対象メッセージを右クリック→アプリ→「Bumpメッセージに設定」で登録しておいてください（未登録でも設定は保存されます）。"
+                "先に対象メッセージを右クリック→アプリ→「Bumpメッセージに設定」で登録しておいてください（未登録でも設定は保存されます）[...]"
             ),
             color=discord.Color.green(),
         )
@@ -121,7 +114,7 @@ class BumpReminder(commands.Cog):
             title="✅ upリマインダーを設定しました",
             description=(
                 f"このチャンネルで {m.mention} に、次回up可能時刻の **{min}分前** に通知します。\n"
-                "先に対象メッセージを右クリック→アプリ→「Upメッセージに設定」で登録しておいてください（未登録でも設定は保存されます）。"
+                "先に対象メッセージを右クリック→アプリ→「Upメッセージに設定」で登録しておいてください（未登録でも設定は保存されます）��[...]"
             ),
             color=discord.Color.green(),
         )
@@ -236,5 +229,37 @@ class BumpReminder(commands.Cog):
             pass
 
 
+# ---------------- Module-level context menu callbacks ----------------
+# Context menus cannot be declared inside a Cog class; create module-level callbacks
+# that delegate to the cog instance's implementation.
+
+async def _bump_context_callback(interaction: discord.Interaction, message: discord.Message):
+    cog = interaction.client.get_cog("BumpReminder")
+    if cog is None:
+        await interaction.response.send_message("Internal error: BumpReminder cog not loaded.", ephemeral=True)
+        return
+    await cog._register_template(interaction, message, "bump", "Bump")
+
+
+async def _up_context_callback(interaction: discord.Interaction, message: discord.Message):
+    cog = interaction.client.get_cog("BumpReminder")
+    if cog is None:
+        await interaction.response.send_message("Internal error: BumpReminder cog not loaded.", ephemeral=True)
+        return
+    await cog._register_template(interaction, message, "up", "Up")
+
+
+_bump_context = app_commands.ContextMenu(name="Bumpメッセージに設定", callback=_bump_context_callback)
+_up_context = app_commands.ContextMenu(name="Upメッセージに設定", callback=_up_context_callback)
+
+
 async def setup(bot: commands.Bot):
+    # Register module-level context menus on the bot's command tree
+    try:
+        bot.tree.add_command(_bump_context)
+        bot.tree.add_command(_up_context)
+    except Exception:
+        # ignore if already added
+        pass
+
     await bot.add_cog(BumpReminder(bot))
