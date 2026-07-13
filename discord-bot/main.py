@@ -48,6 +48,7 @@ EXTENSIONS = [
     "cogs.giveaway",
     "cogs.tickets",
     "cogs.leveling",
+    "cogs.maintenance",
 ]
 
 
@@ -104,6 +105,10 @@ class MultiBot(commands.Bot):
 
     async def _announce_restart(self):
         rows = await self.db.get_all_log_channels()
+        if not rows:
+            log.info("再起動アナウンス用のログチャンネルが未設定です。アナウンスをスキップします。")
+            return
+
         embed = discord.Embed(
             title="🔄 再起動しました",
             description="Dc_Sec Botが再起動しました。",
@@ -111,10 +116,10 @@ class MultiBot(commands.Bot):
             timestamp=discord.utils.utcnow(),
         )
         for row in rows:
-            guild = self.get_guild(row["guild_id"])
+            guild = self.get_guild(row["guild_id"]) if isinstance(row, dict) or hasattr(row, '__getitem__') else self.get_guild(row.guild_id)
             if not guild:
                 continue
-            channel = guild.get_channel(row["channel_id"])
+            channel = guild.get_channel(row["channel_id"]) if isinstance(row, dict) or hasattr(row, '__getitem__') else guild.get_channel(row.channel_id)
             if not channel:
                 continue
             try:
