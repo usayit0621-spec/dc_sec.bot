@@ -27,6 +27,14 @@ CREATE TABLE IF NOT EXISTS reminder_config (
     PRIMARY KEY (guild_id, type)
 );
 
+CREATE TABLE IF NOT EXISTS bump_templates (
+    guild_id INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    author_id INTEGER NOT NULL,
+    template TEXT NOT NULL,
+    PRIMARY KEY (guild_id, type)
+);
+
 CREATE TABLE IF NOT EXISTS automod_config (
     guild_id INTEGER PRIMARY KEY,
     anti_mention_enabled INTEGER DEFAULT 1,
@@ -239,7 +247,7 @@ class Database:
         await self.conn.commit()
 
     async def get_sticky(self, channel_id):
-        cur = await self.conn.execute("SELECT * FROM sticky WHERE channel_id=?", (channel_id,))
+        cur = await self.conn.execute("SELECT * FROM sticky WHERE channel_id=??", (channel_id,))
         return await cur.fetchone()
 
     async def remove_sticky(self, channel_id):
@@ -302,6 +310,33 @@ class Database:
         cur = await self.conn.execute("SELECT * FROM reminder_config")
         return await cur.fetchall()
 
+    # ---------- bump_templates (for bump_reminder) ----------
+    async def set_bump_template(self, guild_id, type_, author_id, template):
+        await self.conn.execute(
+            "INSERT INTO bump_templates (guild_id, type, author_id, template) VALUES (?,?,?,?) "
+            "ON CONFLICT(guild_id, type) DO UPDATE SET author_id=excluded.author_id, template=excluded.template",
+            (guild_id, type_, author_id, template),
+        )
+        await self.conn.commit()
+
+    async def get_bump_template(self, guild_id, type_):
+        cur = await self.conn.execute("SELECT * FROM bump_templates WHERE guild_id=? AND type=?", (guild_id, type_))
+        return await cur.fetchone()
+
+    async def ensure_reminder_config(self, guild_id, type_, channel_id=None):
+        cur = await self.conn.execute("SELECT * FROM reminder_config WHERE guild_id=? AND type=?", (guild_id, type_))
+        row = await cur.fetchone()
+        if row is None:
+            await self.conn.execute(
+                "INSERT INTO reminder_config (guild_id, type, channel_id, role_id, minutes_before, next_time, notified) "
+                "VALUES (?,?,?,?,NULL,NULL,0)",
+                (guild_id, type_, channel_id or 0, 0, 0),
+            )
+            await self.conn.commit()
+            cur = await self.conn.execute("SELECT * FROM reminder_config WHERE guild_id=? AND type=?", (guild_id, type_))
+            return await cur.fetchone()
+        return row
+
     # ---------- automod ----------
     async def get_automod(self, guild_id):
         cur = await self.conn.execute("SELECT * FROM automod_config WHERE guild_id=?", (guild_id,))
@@ -329,7 +364,7 @@ class Database:
 
     async def remove_whitelist(self, guild_id, user_id):
         await self.conn.execute(
-            "DELETE FROM whitelist WHERE guild_id=? AND user_id=?", (guild_id, user_id)
+            "DELETE FROM whitelist WHERE guild_id=? AND user_id=??", (guild_id, user_id)
         )
         await self.conn.commit()
 
