@@ -69,7 +69,9 @@ class Sticky(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.author.bot:
+        # Ignore messages sent by our own bot to avoid repost loops,
+        # but allow other bots and users to trigger sticky reposting.
+        if message.author.id == self.bot.user.id:
             return
         if not message.guild:
             return
