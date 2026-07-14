@@ -193,9 +193,9 @@ class BumpReminder(commands.Cog):
         new_next_time = now_ts + CYCLE_SECONDS
         await self.bot.db.set_reminder_next_time(guild.id, type_, new_next_time)
 
-        # レベルアップ
+        # レベルアップ (変更: 1 -> 50)
         if target_user is not None and not target_user.bot:
-            await apply_level_change(self.bot, guild, target_user, 1)
+            await apply_level_change(self.bot, guild, target_user, 50)
 
     async def _send_rta(self, message: discord.Message, type_: str, elapsed: float, target_user):
         label = "/bump" if type_ == "bump" else "/up"
