@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import os
+import sys
+import traceback
 
 import discord
 from discord import app_commands
@@ -164,24 +166,36 @@ async def handle_health(request: web.Request):
 
 async def start_webserver():
     """RenderのWeb Serviceはポートへの応答を要求するため、常駐する軽量HTTPサーバーを立てる"""
-    app = web.Application()
-    app.router.add_get("/", handle_health)
-    app.router.add_get("/health", handle_health)
-    app.router.add_get("/healthz", handle_health)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    log.info(f"ヘルスチェック用Webサーバーを起動しました (0.0.0.0:{PORT})")
+    try:
+        app = web.Application()
+        app.router.add_get("/", handle_health)
+        app.router.add_get("/health", handle_health)
+        app.router.add_get("/healthz", handle_health)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", PORT)
+        await site.start()
+        log.info(f"ヘルスチェック用Webサーバーを起動しました (0.0.0.0:{PORT})")
+    except Exception:
+        log.exception("Web server failed to start")
+        # Do not re-raise to avoid crashing the whole process in case the webserver
+        # cannot bind; we still want the bot to start so operator can inspect logs.
 
 
 async def main():
     if not TOKEN:
         raise RuntimeError("環境変数 DISCORD_TOKEN が設定されていません。")
+    # Start the webserver but don't let failure stop the bot from starting.
     await start_webserver()
     async with bot:
         await bot.start(TOKEN)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception:
+        # ensure full traceback is visible in deploy logs
+        log.exception("Fatal error while starting bot")
+        traceback.print_exc()
+        sys.exit(1)
