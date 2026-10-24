@@ -19,7 +19,7 @@ class Utility(commands.Cog):
         api_latency = round(self.bot.latency * 1000)
         round_trip = round((end - start) * 1000)
         embed = discord.Embed(title="🏓 Pong!", color=discord.Color.blurple())
-        embed.add_field(name="WebSocket", value=f"{api_latency}ms", inline=True)
+        embed.add_field(name="WebStatus", value=f"{api_latency}ms", inline=True)
         embed.add_field(name="応答時間", value=f"{round_trip}ms", inline=True)
         await interaction.edit_original_response(content=None, embed=embed)
 
@@ -102,13 +102,10 @@ class Utility(commands.Cog):
                 await interaction.response.send_message("招待リンクを作成できませんでした。", ephemeral=True)
                 return
 
-        embed = discord.Embed(
-            title=f"🔗 {guild.name} の招待リンク",
-            color=discord.Color.blurple(),
-        )
-        if invite.url:
-            embed.description = f"[ここをクリックして参加]({invite.url})"
-        embed.add_field(name="作成先", value=(invite.channel.mention if invite.channel else "不明"), inline=True)
+        embed = discord.Embed(title=f"🔗 {guild.name} の招待リンク", color=discord.Color.blurple())
+        embed.description = f"[ここをクリックして参加]({invite.url})"
+        if invite.channel is not None:
+            embed.add_field(name="作成先", value=invite.channel.mention, inline=True)
         embed.add_field(name="使用回数", value="無制限" if invite.max_uses == 0 else str(invite.max_uses), inline=True)
         embed.add_field(name="期限", value="無期限" if invite.max_age == 0 else f"{invite.max_age}秒", inline=True)
         await interaction.response.send_message(embed=embed)
