@@ -19,7 +19,7 @@ class Utility(commands.Cog):
         api_latency = round(self.bot.latency * 1000)
         round_trip = round((end - start) * 1000)
         embed = discord.Embed(title="🏓 Pong!", color=discord.Color.blurple())
-        embed.add_field(name="WebSocket", value=f"{api_latency}ms", inline=True)
+        embed.add_field(name="WebStatus", value=f"{api_latency}ms", inline=True)
         embed.add_field(name="応答時間", value=f"{round_trip}ms", inline=True)
         await interaction.edit_original_response(content=None, embed=embed)
 
