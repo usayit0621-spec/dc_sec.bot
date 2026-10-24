@@ -23,7 +23,7 @@ log = logging.getLogger("bot")
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = os.getenv("GUILD_ID")
-PORT = int(os.getenv("PORT", "10000"))  # RenderのWeb Serviceはこのポートへのヘルスチェックを要求する
+PORT = int(os.getenv("PORT", "10000"))
 
 INTENTS = discord.Intents.default()
 INTENTS.message_content = True
@@ -32,7 +32,7 @@ INTENTS.guilds = True
 INTENTS.voice_states = True
 INTENTS.moderation = True
 INTENTS.invites = True
-INTENTS.presences = True  # /info user でオンライン状況・デバイス種別を取得するために必要
+INTENTS.presences = True
 
 EXTENSIONS = [
     "cogs.sticky",
@@ -56,7 +56,7 @@ EXTENSIONS = [
 
 class MultiBot(commands.Bot):
     def __init__(self):
-        super().__init__(command_prefix="mb!", intents=INTENTS, help_command=None)
+        super().__init__(command_prefix=["d?", "d!"], intents=INTENTS, help_command=None)
         self.db = Database()
         self._restart_announced = False
 
@@ -87,18 +87,55 @@ class MultiBot(commands.Bot):
 
     async def on_ready(self):
         log.info(f"ログイン完了: {self.user} (ID: {self.user.id})")
-        # ステータス表示は cogs/presence.py が10秒ごとにローテーションします
-
         if not self._restart_announced:
             self._restart_announced = True
             await self._announce_restart()
-
         if not self.backup_loop.is_running():
             self.backup_loop.start()
 
+    async def on_guild_join(self, guild: discord.Guild):
+        await self._setup_guild_access(guild)
+
+    async def _setup_guild_access(self, guild: discord.Guild):
+        inviter_id = None
+        try:
+            entries = await guild.audit_logs(limit=40, action=discord.AuditLogAction.bot_add).flatten()
+            for entry in entries:
+                if entry.target and getattr(entry.target, "id", None) == self.user.id:
+                    inviter_id = entry.user.id if entry.user else guild.owner_id
+                    break
+        except (discord.Forbidden, discord.HTTPException):
+            inviter_id = guild.owner_id
+
+        if not inviter_id:
+            inviter_id = guild.owner_id
+
+        await self.db.set_guild_access(guild.id, created_by_user_id=inviter_id)
+
+        try:
+            if inviter_id and inviter_id != guild.owner_id:
+                inviter = guild.get_member(inviter_id) or await self.fetch_user(inviter_id)
+                if inviter:
+                    await inviter.send(
+                        f"{guild.name} に Dc_Sec Bot を追加していただきありがとうございます。\n"
+                        "このサーバーでは、追加者が初期の全権管理者として扱われます。\n"
+                        "必要なら `/mod role` と `/owner role` でロールを設定してください。"
+                    )
+            owner = guild.owner
+            if owner:
+                try:
+                    await owner.send(
+                        f"Dc_Sec Bot が {guild.name} に追加されました。\n"
+                        f"追加者: <@{inviter_id}>\n"
+                        "必要なら `/mod role` と `/owner role` でロールを設定してください。"
+                    )
+                except discord.HTTPException:
+                    pass
+        except discord.HTTPException:
+            pass
+
     @tasks.loop(minutes=10)
     async def backup_loop(self):
-        """設定変更コマンド以外の細かな更新も定期的にバックアップチャンネルへ保存する(安全網)"""
         await upload_backup(self)
 
     @backup_loop.before_loop
@@ -165,7 +202,6 @@ async def handle_health(request: web.Request):
 
 
 async def start_webserver():
-    """RenderのWeb Serviceはポートへの応答を要求するため、常駐する軽量HTTPサーバーを立てる"""
     try:
         app = web.Application()
         app.router.add_get("/", handle_health)
@@ -178,14 +214,11 @@ async def start_webserver():
         log.info(f"ヘルスチェック用Webサーバーを起動しました (0.0.0.0:{PORT})")
     except Exception:
         log.exception("Web server failed to start")
-        # Do not re-raise to avoid crashing the whole process in case the webserver
-        # cannot bind; we still want the bot to start so operator can inspect logs.
 
 
 async def main():
     if not TOKEN:
         raise RuntimeError("環境変数 DISCORD_TOKEN が設定されていません。")
-    # Start the webserver but don't let failure stop the bot from starting.
     await start_webserver()
     async with bot:
         await bot.start(TOKEN)
@@ -195,7 +228,8 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception:
-        # ensure full traceback is visible in deploy logs
         log.exception("Fatal error while starting bot")
         traceback.print_exc()
         sys.exit(1)
+
+

@@ -2,25 +2,31 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from utils.checks import is_manage_guild
+from utils.checks import can_assign_role, has_mod_access
 
 
 class ReactionRoles(commands.Cog):
-    """特定メッセージへのリアクションでロールを自動付与/剥奪する機能"""
+    """リアクションロールとロール付与制限"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     rr_group = app_commands.Group(name="reactionrole", description="リアクションロールの設定")
+    rolepanel_group = app_commands.Group(name="rolepanel", description="ロールパネルの設定")
 
     @rr_group.command(name="add", description="指定メッセージに絵文字リアクションでロールを付与する設定を追加します")
     @app_commands.describe(message_id="対象メッセージのID(メッセージを右クリック→IDをコピー)", emoji="使用する絵文字", role="付与するロール")
-    @is_manage_guild()
     async def rr_add(self, interaction: discord.Interaction, message_id: str, emoji: str, role: discord.Role):
+        if not await has_mod_access(self.bot, interaction.guild, interaction.user):
+            raise app_commands.MissingPermissions(["mod_role_or_owner"])
         try:
             mid = int(message_id)
         except ValueError:
             await interaction.response.send_message("メッセージIDは数字で入力してください。", ephemeral=True)
+            return
+
+        if not await can_assign_role(self.bot, interaction.guild, interaction.user, role):
+            await interaction.response.send_message("自分より上位のロールやBotより上位のロールは付与できません。", ephemeral=True)
             return
 
         target_message = None
@@ -46,10 +52,16 @@ class ReactionRoles(commands.Cog):
             f"✅ メッセージ `{mid}` の {emoji} リアクションで {role.mention} を付与するよう設定しました。", ephemeral=True
         )
 
+    @rolepanel_group.command(name="add", description="ロールパネルの設定を追加します")
+    @app_commands.describe(message_id="対象メッセージのID", emoji="使用する絵文字", role="付与するロール")
+    async def rolepanel_add(self, interaction: discord.Interaction, message_id: str, emoji: str, role: discord.Role):
+        await self.rr_add(interaction, message_id, emoji, role)
+
     @rr_group.command(name="remove", description="リアクションロールの設定を削除します")
     @app_commands.describe(message_id="対象メッセージのID", emoji="対象の絵文字")
-    @is_manage_guild()
     async def rr_remove(self, interaction: discord.Interaction, message_id: str, emoji: str):
+        if not await has_mod_access(self.bot, interaction.guild, interaction.user):
+            raise app_commands.MissingPermissions(["mod_role_or_owner"])
         try:
             mid = int(message_id)
         except ValueError:
@@ -65,12 +77,30 @@ class ReactionRoles(commands.Cog):
         row = await self.bot.db.get_reaction_role(payload.message_id, str(payload.emoji))
         if not row:
             return
-        role = payload.member.guild.get_role(row["role_id"])
-        if role:
+        guild = self.bot.get_guild(payload.guild_id)
+        if not guild:
+            return
+        role = guild.get_role(row["role_id"])
+        if not role:
+            return
+        if not await can_assign_role(self.bot, guild, payload.member, role):
             try:
-                await payload.member.add_roles(role, reason="リアクションロール")
+                await payload.member.send("そのロールは付与できません。自分より上位のロールやBotより上位のロールは付与できません。")
             except discord.HTTPException:
                 pass
+            try:
+                await payload.member.remove_roles(role, reason="権限制限による拒否")
+            except discord.HTTPException:
+                pass
+            try:
+                await payload.message.remove_reaction(payload.emoji, payload.member)
+            except discord.HTTPException:
+                pass
+            return
+        try:
+            await payload.member.add_roles(role, reason="リアクションロール")
+        except discord.HTTPException:
+            pass
 
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
@@ -93,3 +123,7 @@ class ReactionRoles(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ReactionRoles(bot))
+
+
+async def teardown(bot: commands.Bot):
+    pass

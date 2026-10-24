@@ -11,6 +11,16 @@ CREATE TABLE IF NOT EXISTS sticky (
     content TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS guild_access (
+    guild_id INTEGER PRIMARY KEY,
+    created_by_user_id INTEGER,
+    mod_role_id INTEGER,
+    owner_role_id INTEGER,
+    owner_role_locked INTEGER DEFAULT 0,
+    mod_role_locked INTEGER DEFAULT 0,
+    created_at REAL NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS log_config (
     guild_id INTEGER PRIMARY KEY,
     channel_id INTEGER NOT NULL
@@ -18,11 +28,11 @@ CREATE TABLE IF NOT EXISTS log_config (
 
 CREATE TABLE IF NOT EXISTS reminder_config (
     guild_id INTEGER NOT NULL,
-    type TEXT NOT NULL,           -- 'bump' or 'up'
+    type TEXT NOT NULL,
     channel_id INTEGER NOT NULL,
     role_id INTEGER NOT NULL,
     minutes_before INTEGER NOT NULL,
-    next_time REAL,               -- unixtime: 次にコマンドが使用可能になる時刻
+    next_time REAL,
     notified INTEGER DEFAULT 0,
     PRIMARY KEY (guild_id, type)
 );
@@ -231,34 +241,57 @@ class Database:
         if self.conn:
             await self.conn.close()
 
-    # ---------- sticky ----------
-    async def set_sticky(self, channel_id, guild_id, message_id, content):
+    async def get_guild_access(self, guild_id):
+        cur = await self.conn.execute("SELECT * FROM guild_access WHERE guild_id=?", (guild_id,))
+        row = await cur.fetchone()
+        if row is None:
+            await self.conn.execute(
+                "INSERT INTO guild_access (guild_id, created_at) VALUES (?,?)",
+                (guild_id, time.time()),
+            )
+            await self.conn.commit()
+            cur = await self.conn.execute("SELECT * FROM guild_access WHERE guild_id=?", (guild_id,))
+            row = await cur.fetchone()
+        return row
+
+    async def set_guild_access(self, guild_id, created_by_user_id=None, mod_role_id=None, owner_role_id=None):
+        access = await self.get_guild_access(guild_id)
+        if access is None:
+            raise RuntimeError("guild_access record could not be created")
+
+        created_by = created_by_user_id if created_by_user_id is not None else access["created_by_user_id"]
+        mod_role = mod_role_id if mod_role_id is not None else access["mod_role_id"]
+        owner_role = owner_role_id if owner_role_id is not None else access["owner_role_id"]
+
         await self.conn.execute(
-            "INSERT INTO sticky (channel_id, guild_id, message_id, content) VALUES (?,?,?,?) "
-            "ON CONFLICT(channel_id) DO UPDATE SET message_id=excluded.message_id, content=excluded.content",
-            (channel_id, guild_id, message_id, content),
+            "UPDATE guild_access SET created_by_user_id=?, mod_role_id=?, owner_role_id=?, created_at=? WHERE guild_id=?",
+            (created_by, mod_role, owner_role, access["created_at"] or time.time(), guild_id),
         )
         await self.conn.commit()
+        return await self.get_guild_access(guild_id)
 
-    async def update_sticky_message_id(self, channel_id, message_id):
+    async def set_mod_role(self, guild_id, role_id, actor_id):
+        access = await self.get_guild_access(guild_id)
+        if access and access["mod_role_locked"] and access["created_by_user_id"] != actor_id:
+            return False
         await self.conn.execute(
-            "UPDATE sticky SET message_id=? WHERE channel_id=?", (message_id, channel_id)
+            "UPDATE guild_access SET mod_role_id=? WHERE guild_id=?",
+            (role_id, guild_id),
         )
         await self.conn.commit()
+        return True
 
-    async def get_sticky(self, channel_id):
-        cur = await self.conn.execute("SELECT * FROM sticky WHERE channel_id=??", (channel_id,))
-        return await cur.fetchone()
-
-    async def remove_sticky(self, channel_id):
-        await self.conn.execute("DELETE FROM sticky WHERE channel_id=?", (channel_id,))
+    async def set_owner_role(self, guild_id, role_id, actor_id):
+        access = await self.get_guild_access(guild_id)
+        if access and access["owner_role_locked"] and access["created_by_user_id"] != actor_id:
+            return False
+        await self.conn.execute(
+            "UPDATE guild_access SET owner_role_id=?, owner_role_locked=1 WHERE guild_id=?",
+            (role_id, guild_id),
+        )
         await self.conn.commit()
+        return True
 
-    async def get_all_sticky(self):
-        cur = await self.conn.execute("SELECT * FROM sticky")
-        return await cur.fetchall()
-
-    # ---------- log ----------
     async def set_log_channel(self, guild_id, channel_id):
         await self.conn.execute(
             "INSERT INTO log_config (guild_id, channel_id) VALUES (?,?) "
@@ -276,68 +309,6 @@ class Database:
         cur = await self.conn.execute("SELECT * FROM log_config")
         return await cur.fetchall()
 
-    # ---------- reminder ----------
-    async def set_reminder_config(self, guild_id, type_, channel_id, role_id, minutes_before):
-        await self.conn.execute(
-            "INSERT INTO reminder_config (guild_id, type, channel_id, role_id, minutes_before, next_time, notified) "
-            "VALUES (?,?,?,?,?,NULL,0) "
-            "ON CONFLICT(guild_id, type) DO UPDATE SET channel_id=excluded.channel_id, "
-            "role_id=excluded.role_id, minutes_before=excluded.minutes_before",
-            (guild_id, type_, channel_id, role_id, minutes_before),
-        )
-        await self.conn.commit()
-
-    async def set_reminder_next_time(self, guild_id, type_, next_time):
-        await self.conn.execute(
-            "UPDATE reminder_config SET next_time=?, notified=0 WHERE guild_id=? AND type=?",
-            (next_time, guild_id, type_),
-        )
-        await self.conn.commit()
-
-    async def mark_reminder_notified(self, guild_id, type_):
-        await self.conn.execute(
-            "UPDATE reminder_config SET notified=1 WHERE guild_id=? AND type=?", (guild_id, type_)
-        )
-        await self.conn.commit()
-
-    async def get_reminder_config(self, guild_id, type_):
-        cur = await self.conn.execute(
-            "SELECT * FROM reminder_config WHERE guild_id=? AND type=?", (guild_id, type_)
-        )
-        return await cur.fetchone()
-
-    async def get_all_reminders(self):
-        cur = await self.conn.execute("SELECT * FROM reminder_config")
-        return await cur.fetchall()
-
-    # ---------- bump_templates (for bump_reminder) ----------
-    async def set_bump_template(self, guild_id, type_, author_id, template):
-        await self.conn.execute(
-            "INSERT INTO bump_templates (guild_id, type, author_id, template) VALUES (?,?,?,?) "
-            "ON CONFLICT(guild_id, type) DO UPDATE SET author_id=excluded.author_id, template=excluded.template",
-            (guild_id, type_, author_id, template),
-        )
-        await self.conn.commit()
-
-    async def get_bump_template(self, guild_id, type_):
-        cur = await self.conn.execute("SELECT * FROM bump_templates WHERE guild_id=? AND type=?", (guild_id, type_))
-        return await cur.fetchone()
-
-    async def ensure_reminder_config(self, guild_id, type_, channel_id=None):
-        cur = await self.conn.execute("SELECT * FROM reminder_config WHERE guild_id=? AND type=?", (guild_id, type_))
-        row = await cur.fetchone()
-        if row is None:
-            await self.conn.execute(
-                "INSERT INTO reminder_config (guild_id, type, channel_id, role_id, minutes_before, next_time, notified) "
-                "VALUES (?,?,?,?,NULL,NULL,0)",
-                (guild_id, type_, channel_id or 0, 0, 0),
-            )
-            await self.conn.commit()
-            cur = await self.conn.execute("SELECT * FROM reminder_config WHERE guild_id=? AND type=?", (guild_id, type_))
-            return await cur.fetchone()
-        return row
-
-    # ---------- automod ----------
     async def get_automod(self, guild_id):
         cur = await self.conn.execute("SELECT * FROM automod_config WHERE guild_id=?", (guild_id,))
         row = await cur.fetchone()
@@ -355,26 +326,6 @@ class Database:
         await self.conn.execute(f"UPDATE automod_config SET {keys} WHERE guild_id=?", values)
         await self.conn.commit()
 
-    # ---------- whitelist ----------
-    async def add_whitelist(self, guild_id, user_id):
-        await self.conn.execute(
-            "INSERT OR IGNORE INTO whitelist (guild_id, user_id) VALUES (?,?)", (guild_id, user_id)
-        )
-        await self.conn.commit()
-
-    async def remove_whitelist(self, guild_id, user_id):
-        await self.conn.execute(
-            "DELETE FROM whitelist WHERE guild_id=? AND user_id=??", (guild_id, user_id)
-        )
-        await self.conn.commit()
-
-    async def is_whitelisted(self, guild_id, user_id):
-        cur = await self.conn.execute(
-            "SELECT 1 FROM whitelist WHERE guild_id=? AND user_id=?", (guild_id, user_id)
-        )
-        return await cur.fetchone() is not None
-
-    # ---------- warnings ----------
     async def add_warning(self, guild_id, user_id, moderator_id, reason):
         await self.conn.execute(
             "INSERT INTO warnings (guild_id, user_id, moderator_id, reason, timestamp) VALUES (?,?,?,?,?)",
@@ -395,58 +346,6 @@ class Database:
         )
         await self.conn.commit()
 
-    # ---------- welcome / leave / autorole ----------
-    async def get_welcome_config(self, guild_id):
-        cur = await self.conn.execute("SELECT * FROM welcome_config WHERE guild_id=?", (guild_id,))
-        row = await cur.fetchone()
-        if row is None:
-            await self.conn.execute("INSERT INTO welcome_config (guild_id) VALUES (?)", (guild_id,))
-            await self.conn.commit()
-            cur = await self.conn.execute("SELECT * FROM welcome_config WHERE guild_id=?", (guild_id,))
-            row = await cur.fetchone()
-        return row
-
-    async def update_welcome_config(self, guild_id, **kwargs):
-        await self.get_welcome_config(guild_id)
-        keys = ", ".join(f"{k}=?" for k in kwargs)
-        values = list(kwargs.values()) + [guild_id]
-        await self.conn.execute(f"UPDATE welcome_config SET {keys} WHERE guild_id=?", values)
-        await self.conn.commit()
-
-    # ---------- afk ----------
-    async def set_afk(self, guild_id, user_id, reason, original_nick):
-        await self.conn.execute(
-            "INSERT INTO afk (guild_id, user_id, reason, timestamp, original_nick) VALUES (?,?,?,?,?) "
-            "ON CONFLICT(guild_id, user_id) DO UPDATE SET reason=excluded.reason, timestamp=excluded.timestamp",
-            (guild_id, user_id, reason, time.time(), original_nick),
-        )
-        await self.conn.commit()
-
-    async def get_afk(self, guild_id, user_id):
-        cur = await self.conn.execute("SELECT * FROM afk WHERE guild_id=? AND user_id=?", (guild_id, user_id))
-        return await cur.fetchone()
-
-    async def remove_afk(self, guild_id, user_id):
-        await self.conn.execute("DELETE FROM afk WHERE guild_id=? AND user_id=?", (guild_id, user_id))
-        await self.conn.commit()
-
-    # ---------- reminders ----------
-    async def add_reminder(self, guild_id, channel_id, user_id, message, remind_at):
-        await self.conn.execute(
-            "INSERT INTO reminders (guild_id, channel_id, user_id, message, remind_at) VALUES (?,?,?,?,?)",
-            (guild_id, channel_id, user_id, message, remind_at),
-        )
-        await self.conn.commit()
-
-    async def get_due_reminders(self, now):
-        cur = await self.conn.execute("SELECT * FROM reminders WHERE remind_at<=? AND notified=0", (now,))
-        return await cur.fetchall()
-
-    async def mark_reminder_done(self, reminder_id):
-        await self.conn.execute("UPDATE reminders SET notified=1 WHERE id=?", (reminder_id,))
-        await self.conn.commit()
-
-    # ---------- reaction roles ----------
     async def add_reaction_role(self, guild_id, message_id, emoji, role_id):
         await self.conn.execute(
             "INSERT OR REPLACE INTO reaction_roles (guild_id, message_id, emoji, role_id) VALUES (?,?,?,?)",
@@ -466,7 +365,62 @@ class Database:
         )
         return await cur.fetchone()
 
-    # ---------- verification ----------
+    async def add_whitelist(self, guild_id, user_id):
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO whitelist (guild_id, user_id) VALUES (?,?)", (guild_id, user_id)
+        )
+        await self.conn.commit()
+
+    async def remove_whitelist(self, guild_id, user_id):
+        await self.conn.execute(
+            "DELETE FROM whitelist WHERE guild_id=? AND user_id=?", (guild_id, user_id)
+        )
+        await self.conn.commit()
+
+    async def is_whitelisted(self, guild_id, user_id):
+        cur = await self.conn.execute(
+            "SELECT 1 FROM whitelist WHERE guild_id=? AND user_id=?", (guild_id, user_id)
+        )
+        return await cur.fetchone() is not None
+
+    async def add_bot_whitelist(self, guild_id, bot_id):
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO bot_whitelist (guild_id, bot_id) VALUES (?,?)",
+            (guild_id, bot_id),
+        )
+        await self.conn.commit()
+
+    async def remove_bot_whitelist(self, guild_id, bot_id):
+        await self.conn.execute(
+            "DELETE FROM bot_whitelist WHERE guild_id=? AND bot_id=?", (guild_id, bot_id)
+        )
+        await self.conn.commit()
+
+    async def is_bot_whitelisted(self, guild_id, bot_id) -> bool:
+        cur = await self.conn.execute(
+            "SELECT 1 FROM bot_whitelist WHERE guild_id=? AND bot_id=?", (guild_id, bot_id)
+        )
+        return await cur.fetchone() is not None
+
+    async def add_channel_allowed(self, guild_id, channel_id):
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO channel_allowed (guild_id, channel_id) VALUES (?,?)",
+            (guild_id, channel_id),
+        )
+        await self.conn.commit()
+
+    async def remove_channel_allowed(self, guild_id, channel_id):
+        await self.conn.execute(
+            "DELETE FROM channel_allowed WHERE guild_id=? AND channel_id=?", (guild_id, channel_id)
+        )
+        await self.conn.commit()
+
+    async def is_channel_allowed(self, guild_id, channel_id) -> bool:
+        cur = await self.conn.execute(
+            "SELECT 1 FROM channel_allowed WHERE guild_id=? AND channel_id=?", (guild_id, channel_id)
+        )
+        return await cur.fetchone() is not None
+
     async def set_verification(self, guild_id, channel_id, role_id, message_id):
         await self.conn.execute(
             "INSERT INTO verification_config (guild_id, channel_id, role_id, message_id) VALUES (?,?,?,?) "
@@ -480,37 +434,41 @@ class Database:
         cur = await self.conn.execute("SELECT * FROM verification_config WHERE guild_id=?", (guild_id,))
         return await cur.fetchone()
 
-    # ---------- giveaways ----------
-    async def create_giveaway(self, guild_id, channel_id, prize, winners_count, host_id, end_time):
-        cur = await self.conn.execute(
-            "INSERT INTO giveaways (guild_id, channel_id, prize, winners_count, host_id, end_time) "
-            "VALUES (?,?,?,?,?,?)",
-            (guild_id, channel_id, prize, winners_count, host_id, end_time),
+    async def set_sticky(self, channel_id, guild_id, message_id, content):
+        await self.conn.execute(
+            "INSERT INTO sticky (channel_id, guild_id, message_id, content) VALUES (?,?,?,?) "
+            "ON CONFLICT(channel_id) DO UPDATE SET message_id=excluded.message_id, content=excluded.content",
+            (channel_id, guild_id, message_id, content),
         )
         await self.conn.commit()
-        return cur.lastrowid
 
-    async def set_giveaway_message(self, giveaway_id, message_id):
-        await self.conn.execute("UPDATE giveaways SET message_id=? WHERE id=?", (message_id, giveaway_id))
+    async def get_sticky(self, channel_id):
+        cur = await self.conn.execute("SELECT * FROM sticky WHERE channel_id=?", (channel_id,))
+        return await cur.fetchone()
+
+    async def remove_sticky(self, channel_id):
+        await self.conn.execute("DELETE FROM sticky WHERE channel_id=?", (channel_id,))
         await self.conn.commit()
 
-    async def get_due_giveaways(self, now):
-        cur = await self.conn.execute("SELECT * FROM giveaways WHERE end_time<=? AND ended=0", (now,))
+    async def get_all_sticky(self):
+        cur = await self.conn.execute("SELECT * FROM sticky")
         return await cur.fetchall()
 
-    async def mark_giveaway_ended(self, giveaway_id):
-        await self.conn.execute("UPDATE giveaways SET ended=1 WHERE id=?", (giveaway_id,))
+    async def add_reminder(self, guild_id, channel_id, user_id, message, remind_at):
+        await self.conn.execute(
+            "INSERT INTO reminders (guild_id, channel_id, user_id, message, remind_at) VALUES (?,?,?,?,?)",
+            (guild_id, channel_id, user_id, message, remind_at),
+        )
         await self.conn.commit()
 
-    async def get_giveaway(self, giveaway_id):
-        cur = await self.conn.execute("SELECT * FROM giveaways WHERE id=?", (giveaway_id,))
-        return await cur.fetchone()
+    async def get_due_reminders(self, now):
+        cur = await self.conn.execute("SELECT * FROM reminders WHERE remind_at<=? AND notified=0", (now,))
+        return await cur.fetchall()
 
-    async def get_giveaway_by_message(self, message_id):
-        cur = await self.conn.execute("SELECT * FROM giveaways WHERE message_id=? AND ended=0", (message_id,))
-        return await cur.fetchone()
+    async def mark_reminder_done(self, reminder_id):
+        await self.conn.execute("UPDATE reminders SET notified=1 WHERE id=?", (reminder_id,))
+        await self.conn.commit()
 
-    # ---------- tickets ----------
     async def get_ticket_config(self, guild_id):
         cur = await self.conn.execute("SELECT * FROM ticket_config WHERE guild_id=?", (guild_id,))
         row = await cur.fetchone()
@@ -528,47 +486,6 @@ class Database:
         await self.conn.execute(f"UPDATE ticket_config SET {keys} WHERE guild_id=?", values)
         await self.conn.commit()
 
-    async def increment_ticket_counter(self, guild_id):
-        config = await self.get_ticket_config(guild_id)
-        new_count = config["ticket_counter"] + 1
-        await self.conn.execute("UPDATE ticket_config SET ticket_counter=? WHERE guild_id=?", (new_count, guild_id))
-        await self.conn.commit()
-        return new_count
-
-    async def add_ticket_channel(self, channel_id, guild_id, opener_id):
-        await self.conn.execute(
-            "INSERT INTO ticket_channels (channel_id, guild_id, opener_id, created_at) VALUES (?,?,?,?)",
-            (channel_id, guild_id, opener_id, time.time()),
-        )
-        await self.conn.commit()
-
-    async def get_ticket_channel(self, channel_id):
-        cur = await self.conn.execute("SELECT * FROM ticket_channels WHERE channel_id=?", (channel_id,))
-        return await cur.fetchone()
-
-    async def remove_ticket_channel(self, channel_id):
-        await self.conn.execute("DELETE FROM ticket_channels WHERE channel_id=?", (channel_id,))
-        await self.conn.commit()
-
-    # ---------- word blacklist ----------
-    async def add_blacklist_word(self, guild_id, word):
-        await self.conn.execute(
-            "INSERT OR IGNORE INTO word_blacklist (guild_id, word) VALUES (?,?)", (guild_id, word.lower())
-        )
-        await self.conn.commit()
-
-    async def remove_blacklist_word(self, guild_id, word):
-        await self.conn.execute(
-            "DELETE FROM word_blacklist WHERE guild_id=? AND word=?", (guild_id, word.lower())
-        )
-        await self.conn.commit()
-
-    async def get_blacklist_words(self, guild_id):
-        cur = await self.conn.execute("SELECT word FROM word_blacklist WHERE guild_id=?", (guild_id,))
-        rows = await cur.fetchall()
-        return [r["word"] for r in rows]
-
-    # ---------- suggest ----------
     async def set_suggest_channel(self, guild_id, channel_id):
         await self.conn.execute(
             "INSERT INTO suggest_config (guild_id, channel_id) VALUES (?,?) "
@@ -582,7 +499,11 @@ class Database:
         row = await cur.fetchone()
         return row["channel_id"] if row else None
 
-    # ---------- url whitelist ----------
+    async def get_url_whitelist(self, guild_id):
+        cur = await self.conn.execute("SELECT domain FROM url_whitelist WHERE guild_id=?", (guild_id,))
+        rows = await cur.fetchall()
+        return [r["domain"] for r in rows]
+
     async def add_url_whitelist(self, guild_id, domain):
         await self.conn.execute(
             "INSERT OR IGNORE INTO url_whitelist (guild_id, domain) VALUES (?,?)", (guild_id, domain.lower())
@@ -595,43 +516,8 @@ class Database:
         )
         await self.conn.commit()
 
-    async def get_url_whitelist(self, guild_id):
-        cur = await self.conn.execute("SELECT domain FROM url_whitelist WHERE guild_id=?", (guild_id,))
-        rows = await cur.fetchall()
-        return [r["domain"] for r in rows]
-
-    # ---------- spam strikes(スパム系タイムアウトの累積回数) ----------
-    async def increment_strike(self, guild_id, user_id):
-        await self.conn.execute(
-            "INSERT INTO spam_strikes (guild_id, user_id, count) VALUES (?,?,1) "
-            "ON CONFLICT(guild_id, user_id) DO UPDATE SET count = count + 1",
-            (guild_id, user_id),
-        )
-        await self.conn.commit()
-        cur = await self.conn.execute(
-            "SELECT count FROM spam_strikes WHERE guild_id=? AND user_id=?", (guild_id, user_id)
-        )
-        row = await cur.fetchone()
-        return row["count"] if row else 0
-
-    async def get_strikes(self, guild_id, user_id):
-        cur = await self.conn.execute(
-            "SELECT count FROM spam_strikes WHERE guild_id=? AND user_id=?", (guild_id, user_id)
-        )
-        row = await cur.fetchone()
-        return row["count"] if row else 0
-
-    async def reset_strikes(self, guild_id, user_id):
-        await self.conn.execute(
-            "DELETE FROM spam_strikes WHERE guild_id=? AND user_id=?", (guild_id, user_id)
-        )
-        await self.conn.commit()
-
-    # ---------- levels(レベル制度) ----------
     async def get_level(self, guild_id, user_id):
-        cur = await self.conn.execute(
-            "SELECT level FROM levels WHERE guild_id=? AND user_id=?", (guild_id, user_id)
-        )
+        cur = await self.conn.execute("SELECT level FROM levels WHERE guild_id=? AND user_id=?", (guild_id, user_id))
         row = await cur.fetchone()
         return row["level"] if row else 0
 
@@ -674,54 +560,108 @@ class Database:
         await self.conn.commit()
 
     async def get_levelup_channel(self, guild_id):
-        cur = await self.conn.execute(
-            "SELECT channel_id FROM levelup_config WHERE guild_id=?", (guild_id,)
-        )
+        cur = await self.conn.execute("SELECT channel_id FROM levelup_config WHERE guild_id=?", (guild_id,))
         row = await cur.fetchone()
         return row["channel_id"] if row else None
 
-    # ---------------- bot-whitelist (監視除外Bot) ----------------
-    async def add_bot_whitelist(self, guild_id, bot_id):
+    async def increment_strike(self, guild_id, user_id):
         await self.conn.execute(
-            "INSERT OR IGNORE INTO bot_whitelist (guild_id, bot_id) VALUES (?,?)",
-            (guild_id, bot_id),
+            "INSERT INTO spam_strikes (guild_id, user_id, count) VALUES (?,?,1) "
+            "ON CONFLICT(guild_id, user_id) DO UPDATE SET count = count + 1",
+            (guild_id, user_id),
+        )
+        await self.conn.commit()
+        cur = await self.conn.execute(
+            "SELECT count FROM spam_strikes WHERE guild_id=? AND user_id=?", (guild_id, user_id)
+        )
+        row = await cur.fetchone()
+        return row["count"] if row else 0
+
+    async def get_strikes(self, guild_id, user_id):
+        cur = await self.conn.execute(
+            "SELECT count FROM spam_strikes WHERE guild_id=? AND user_id=?", (guild_id, user_id)
+        )
+        row = await cur.fetchone()
+        return row["count"] if row else 0
+
+    async def reset_strikes(self, guild_id, user_id):
+        await self.conn.execute(
+            "DELETE FROM spam_strikes WHERE guild_id=? AND user_id=?", (guild_id, user_id)
         )
         await self.conn.commit()
 
-    async def remove_bot_whitelist(self, guild_id, bot_id):
+    async def get_blacklist_words(self, guild_id):
+        cur = await self.conn.execute("SELECT word FROM word_blacklist WHERE guild_id=?", (guild_id,))
+        rows = await cur.fetchall()
+        return [r["word"] for r in rows]
+
+    async def add_blacklist_word(self, guild_id, word):
         await self.conn.execute(
-            "DELETE FROM bot_whitelist WHERE guild_id=? AND bot_id=?", (guild_id, bot_id)
+            "INSERT OR IGNORE INTO word_blacklist (guild_id, word) VALUES (?,?)", (guild_id, word.lower())
         )
         await self.conn.commit()
 
-    async def is_bot_whitelisted(self, guild_id, bot_id) -> bool:
-        cur = await self.conn.execute(
-            "SELECT 1 FROM bot_whitelist WHERE guild_id=? AND bot_id=?", (guild_id, bot_id)
+    async def remove_blacklist_word(self, guild_id, word):
+        await self.conn.execute(
+            "DELETE FROM word_blacklist WHERE guild_id=? AND word=?", (guild_id, word.lower())
         )
-        return await cur.fetchone() is not None
+        await self.conn.commit()
 
-    async def get_bot_whitelist(self, guild_id):
-        cur = await self.conn.execute(
-            "SELECT bot_id FROM bot_whitelist WHERE guild_id=?", (guild_id,)
+    async def get_ticket_channel(self, channel_id):
+        cur = await self.conn.execute("SELECT * FROM ticket_channels WHERE channel_id=?", (channel_id,))
+        return await cur.fetchone()
+
+    async def add_ticket_channel(self, channel_id, guild_id, opener_id):
+        await self.conn.execute(
+            "INSERT INTO ticket_channels (channel_id, guild_id, opener_id, created_at) VALUES (?,?,?,?)",
+            (channel_id, guild_id, opener_id, time.time()),
         )
+        await self.conn.commit()
+
+    async def remove_ticket_channel(self, channel_id):
+        await self.conn.execute("DELETE FROM ticket_channels WHERE channel_id=?", (channel_id,))
+        await self.conn.commit()
+
+    async def create_giveaway(self, guild_id, channel_id, prize, winners_count, host_id, end_time):
+        cur = await self.conn.execute(
+            "INSERT INTO giveaways (guild_id, channel_id, prize, winners_count, host_id, end_time) VALUES (?,?,?,?,?,?)",
+            (guild_id, channel_id, prize, winners_count, host_id, end_time),
+        )
+        await self.conn.commit()
+        return cur.lastrowid
+
+    async def get_due_giveaways(self, now):
+        cur = await self.conn.execute("SELECT * FROM giveaways WHERE end_time<=? AND ended=0", (now,))
         return await cur.fetchall()
 
-    # ---------------- channel-allowed (監視除外チャンネル/リンク許可) ----------------
-    async def add_channel_allowed(self, guild_id, channel_id):
+    async def mark_giveaway_ended(self, giveaway_id):
+        await self.conn.execute("UPDATE giveaways SET ended=1 WHERE id=?", (giveaway_id,))
+        await self.conn.commit()
+
+    async def get_giveaway(self, giveaway_id):
+        cur = await self.conn.execute("SELECT * FROM giveaways WHERE id=?", (giveaway_id,))
+        return await cur.fetchone()
+
+    async def get_giveaway_by_message(self, message_id):
+        cur = await self.conn.execute("SELECT * FROM giveaways WHERE message_id=? AND ended=0", (message_id,))
+        return await cur.fetchone()
+
+    async def set_giveaway_message(self, giveaway_id, message_id):
+        await self.conn.execute("UPDATE giveaways SET message_id=? WHERE id=?", (message_id, giveaway_id))
+        await self.conn.commit()
+
+    async def add_reminder(self, guild_id, channel_id, user_id, message, remind_at):
         await self.conn.execute(
-            "INSERT OR IGNORE INTO channel_allowed (guild_id, channel_id) VALUES (?,?)",
-            (guild_id, channel_id),
+            "INSERT INTO reminders (guild_id, channel_id, user_id, message, remind_at) VALUES (?,?,?,?,?)",
+            (guild_id, channel_id, user_id, message, remind_at),
         )
         await self.conn.commit()
 
-    async def remove_channel_allowed(self, guild_id, channel_id):
-        await self.conn.execute(
-            "DELETE FROM channel_allowed WHERE guild_id=? AND channel_id=?", (guild_id, channel_id)
-        )
-        await self.conn.commit()
+    async def get_due_reminders(self, now):
+        cur = await self.conn.execute("SELECT * FROM reminders WHERE remind_at<=? AND notified=0", (now,))
+        return await cur.fetchall()
 
-    async def is_channel_allowed(self, guild_id, channel_id) -> bool:
-        cur = await self.conn.execute(
-            "SELECT 1 FROM channel_allowed WHERE guild_id=? AND channel_id=?", (guild_id, channel_id)
-        )
-        return await cur.fetchone() is not None
+    async def mark_reminder_done(self, reminder_id):
+        await self.conn.execute("UPDATE reminders SET notified=1 WHERE id=?", (reminder_id,))
+        await self.conn.commit()
+" , 

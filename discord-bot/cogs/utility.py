@@ -6,7 +6,7 @@ from discord.ext import commands
 
 
 class Utility(commands.Cog):
-    """ping / userinfo / serverinfo / avatar などの便利コマンド"""
+    """ping / userinfo / serverinfo / avatar / devinvites などの便利コマンド"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
