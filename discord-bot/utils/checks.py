@@ -1,0 +1,127 @@
+import discord
+from discord import app_commands
+
+
+JST_EMBED_COLOR = discord.Color.blurple()
+SUCCESS_COLOR = discord.Color.green()
+WARN_COLOR = discord.Color.orange()
+DANGER_COLOR = discord.Color.red()
+
+
+async def get_guild_access(bot, guild_id):
+    if bot is None or guild_id is None:
+        return None
+    return await bot.db.get_guild_access(guild_id)
+
+
+async def has_owner_access(bot, guild, user):
+    if bot is None or guild is None or user is None:
+        return False
+    if user.id == guild.owner_id:
+        return True
+    access = await get_guild_access(bot, guild.id)
+    if not access:
+        return False
+    if access["created_by_user_id"] and user.id == access["created_by_user_id"]:
+        return True
+    owner_role_id = access["owner_role_id"]
+    if owner_role_id:
+        owner_role = guild.get_role(owner_role_id)
+        if owner_role and owner_role in user.roles:
+            return True
+    return False
+
+
+async def has_mod_access(bot, guild, user):
+    if bot is None or guild is None or user is None:
+        return False
+    if await has_owner_access(bot, guild, user):
+        return True
+    access = await get_guild_access(bot, guild.id)
+    if not access:
+        return False
+    mod_role_id = access["mod_role_id"]
+    if mod_role_id:
+        mod_role = guild.get_role(mod_role_id)
+        if mod_role and mod_role in user.roles:
+            return True
+    return False
+
+
+async def can_assign_role(bot, guild, actor, target_role):
+    if bot is None or guild is None or actor is None or target_role is None:
+        return False
+    if actor.id == guild.owner_id:
+        return True
+    if await has_owner_access(bot, guild, actor):
+        return True
+    if target_role.position >= guild.me.top_role.position:
+        return False
+    if target_role.position >= actor.top_role.position:
+        return False
+    return True
+
+
+async def command_access_list(bot, guild, user):
+    if guild is None or user is None:
+        return ["everyone"]
+    if await has_owner_access(bot, guild, user):
+        return ["everyone", "mod", "owner"]
+    if await has_mod_access(bot, guild, user):
+        return ["everyone", "mod"]
+    return ["everyone"]
+
+
+def is_manage_guild():
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if interaction.user.guild_permissions.manage_guild:
+            return True
+        raise app_commands.MissingPermissions(["manage_guild"])
+    return app_commands.check(predicate)
+
+
+def is_manage_messages():
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if interaction.user.guild_permissions.manage_messages:
+            return True
+        raise app_commands.MissingPermissions(["manage_messages"])
+    return app_commands.check(predicate)
+
+
+def is_moderator():
+    async def predicate(interaction: discord.Interaction) -> bool:
+        perms = interaction.user.guild_permissions
+        if perms.kick_members or perms.ban_members or perms.moderate_members:
+            return True
+        raise app_commands.MissingPermissions(["moderate_members"])
+    return app_commands.check(predicate)
+
+
+def is_admin():
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if interaction.user.guild_permissions.administrator:
+            return True
+        raise app_commands.MissingPermissions(["administrator"])
+    return app_commands.check(predicate)
+
+
+async def can_manage_bot(interaction: discord.Interaction) -> bool:
+    if interaction.guild is None:
+        return False
+    return await has_owner_access(interaction.client, interaction.guild, interaction.user)
+
+
+async def ensure_owner_access(interaction):
+    if interaction.guild is None:
+        raise app_commands.MissingPermissions(["guild_only"])
+    if not await has_owner_access(interaction.client, interaction.guild, interaction.user):
+        raise app_commands.MissingPermissions(["bot_owner"])
+    return True
+
+
+async def ensure_mod_access(interaction):
+    if interaction.guild is None:
+        raise app_commands.MissingPermissions(["guild_only"])
+    if not await has_mod_access(interaction.client, interaction.guild, interaction.user):
+        raise app_commands.MissingPermissions(["mod_role_or_owner"])
+    return True
