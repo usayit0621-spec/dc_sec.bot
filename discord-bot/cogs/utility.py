@@ -61,6 +61,55 @@ class Utility(commands.Cog):
         embed.set_image(url=member.display_avatar.url)
         await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(name="devinvites", description="このサーバーの招待リンクを表示します。存在しなければ新規作成します。")
+    async def devinvites(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("このコマンドはサーバー内でのみ使用できます。", ephemeral=True)
+            return
+
+        invite = None
+        try:
+            invites = await guild.invites()
+        except (discord.Forbidden, discord.HTTPException):
+            invites = []
+
+        for candidate in invites:
+            if candidate.revoked:
+                continue
+            if candidate.max_uses == 0 and candidate.max_age == 0:
+                invite = candidate
+                break
+            if candidate.max_uses == 0:
+                invite = candidate
+                break
+
+        if invite is None:
+            channel = None
+            for ch in guild.text_channels:
+                if ch.permissions_for(guild.me).create_instant_invite:
+                    channel = ch
+                    break
+            if channel is None:
+                await interaction.response.send_message("招待リンクを作成できるチャンネルが見つかりませんでした。", ephemeral=True)
+                return
+            try:
+                invite = await channel.create_invite(max_age=0, max_uses=0, unique=True)
+            except discord.Forbidden:
+                await interaction.response.send_message("招待リンクの作成権限がありません。", ephemeral=True)
+                return
+            except discord.HTTPException:
+                await interaction.response.send_message("招待リンクを作成できませんでした。", ephemeral=True)
+                return
+
+        embed = discord.Embed(title=f"🔗 {guild.name} の招待リンク", color=discord.Color.blurple())
+        embed.description = f"[ここをクリックして参加]({invite.url})"
+        if invite.channel is not None:
+            embed.add_field(name="作成先", value=invite.channel.mention, inline=True)
+        embed.add_field(name="使用回数", value="無制限" if invite.max_uses == 0 else str(invite.max_uses), inline=True)
+        embed.add_field(name="期限", value="無期限" if invite.max_age == 0 else f"{invite.max_age}秒", inline=True)
+        await interaction.response.send_message(embed=embed)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Utility(bot))
