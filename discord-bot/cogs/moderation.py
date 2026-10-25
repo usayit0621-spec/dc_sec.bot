@@ -1,10 +1,23 @@
 import datetime
+import re
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from utils.checks import can_assign_role, command_access_list, ensure_mod_access, ensure_owner_access, has_mod_access, has_owner_access
+from utils.checks import (
+    DANGER_COLOR,
+    JST_EMBED_COLOR,
+    SUCCESS_COLOR,
+    WARN_COLOR,
+    can_assign_role,
+    can_manage_bot,
+    can_manage_mods,
+    ensure_mod_access,
+    ensure_owner_access,
+    has_mod_access,
+    has_owner_access,
+)
 
 
 class Moderation(commands.Cog):
@@ -13,217 +26,198 @@ class Moderation(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    async def _help_list(self, guild: discord.Guild, user: discord.Member):
-        access = await command_access_list(self.bot, guild, user)
-        lines = [
-            "Dc_Sec Bot ヘルプ",
-            "- d?help / d!help: ヘルプ",
-            "- d?ban / d?b: BAN",
-            "- d?mute / d?m: タイムアウト",
-            "- d?kick / d?k: キック",
-        ]
-        if "mod" in access:
-            lines.append("- モデレーション権限あり: /kick /ban /timeout /warn /purge")
-        if "owner" in access:
-            lines.append("- オーナー権限あり: /mod role /owner role")
-        return "\n".join(lines)
+    async def _guild_cfg(self, guild: discord.Guild):
+        return self.bot.guild_config.setdefault(str(guild.id), {})
 
-    @app_commands.group(name="mod", description="モデレーターロールの設定")
+    async def _can_target(self, executor: discord.Member, target: discord.Member):
+        if executor.id == self.bot.user.id:
+            return True
+        if target.id == executor.guild.owner_id:
+            return False
+        if target.id == self.bot.user.id:
+            return False
+        if target.top_role >= executor.top_role and executor.id != executor.guild.owner_id:
+            return False
+        if target.top_role >= executor.guild.me.top_role and executor.id != executor.guild.owner_id:
+            return False
+        return True
+
+    async def _can_manage_member(self, user: discord.Member, target: discord.Member, guild: discord.Guild):
+        if user.id == guild.owner_id:
+            return True
+        if await has_owner_access(self.bot, guild, user):
+            return True
+        if await has_mod_access(self.bot, guild, user):
+            if await self._can_target(user, target):
+                return True
+        return False
+
+    async def _target_member(self, interaction: discord.Interaction, member: discord.Member):
+        if not await self._can_manage_member(interaction.user, member, interaction.guild):
+            raise app_commands.CheckFailure("このユーザーを管理できません。")
+        return True
+
+    @app_commands.group(name="mod")
     async def mod_group(self, interaction: discord.Interaction):
+        """モデレーション関連コマンド"""
         pass
 
-    @mod_group.command(name="role", description="モデレーターロールを設定します")
-    @app_commands.describe(role="モデレーターとして扱うロール")
+    @mod_group.command(name="role")
+    @app_commands.describe(role="モデレーターロール")
     async def mod_role(self, interaction: discord.Interaction, role: discord.Role):
+        """モデレーターロールを設定する"""
         await ensure_owner_access(interaction)
-        access = await self.bot.db.get_guild_access(interaction.guild_id)
-        if access and access["owner_role_id"] and access["owner_role_locked"] and interaction.user.id != access["created_by_user_id"]:
-            await interaction.response.send_message("オーナーロールが既に固定されているため、追加者本人のみ変更できます。", ephemeral=True)
-            return
-        ok = await self.bot.db.set_mod_role(interaction.guild_id, role.id, interaction.user.id)
-        if not ok:
-            await interaction.response.send_message("モデレーターロール設定は追加者本人しか変更できません。", ephemeral=True)
-            return
-        await interaction.response.send_message(f"✅ モデレーターロールを {role.mention} に設定しました。", ephemeral=True)
+        guild_cfg = await self._guild_cfg(interaction.guild)
+        if guild_cfg.get("owner_role_locked") and guild_cfg.get("owner_role_id"):
+            if interaction.user.id != guild_cfg.get("owner_user_id"):
+                await interaction.response.send_message("オーナーロールがロックされているため、モデレーターロールは変更できません。", ephemeral=True)
+                return
+        guild_cfg["mod_role_id"] = role.id
+        await interaction.response.send_message(f"モデレーターロールを {role.mention} に設定しました。", ephemeral=True)
 
-    @app_commands.group(name="owner", description="オーナーロールの設定")
+    @app_commands.group(name="owner")
     async def owner_group(self, interaction: discord.Interaction):
+        """オーナー設定"""
         pass
 
-    @owner_group.command(name="role", description="オーナーロールを設定します。設定後は追加者本人だけ変更可能です。")
-    @app_commands.describe(role="オーナーとして扱うロール")
+    @owner_group.command(name="role")
+    @app_commands.describe(role="オーナーロール")
     async def owner_role(self, interaction: discord.Interaction, role: discord.Role):
-        await ensure_owner_access(interaction)
-        access = await self.bot.db.get_guild_access(interaction.guild_id)
-        if access and access["owner_role_id"] and access["owner_role_locked"] and interaction.user.id != access["created_by_user_id"]:
-            await interaction.response.send_message("オーナーロールは既に固定済みです。追加者本人のみ変更できます。", ephemeral=True)
-            return
-        ok = await self.bot.db.set_owner_role(interaction.guild_id, role.id, interaction.user.id)
-        if not ok:
-            await interaction.response.send_message("オーナーロールの再設定は追加者本人のみ可能です。", ephemeral=True)
-            return
-        await interaction.response.send_message(f"✅ オーナーロールを {role.mention} に設定しました。設定後は追加者本人のみ変更可能です。", ephemeral=True)
+        """オーナーロールを設定する"""
+        guild_cfg = await self._guild_cfg(interaction.guild)
+        if guild_cfg.get("owner_role_id") and guild_cfg.get("owner_role_locked"):
+            if interaction.user.id != guild_cfg.get("owner_user_id"):
+                await interaction.response.send_message("オーナーロールはロックされているため、変更できません。", ephemeral=True)
+                return
+        if interaction.user.id != guild_cfg.get("owner_user_id") and interaction.user.id != interaction.guild.owner_id:
+            if not await has_owner_access(interaction.client, interaction.guild, interaction.user):
+                await interaction.response.send_message("オーナーロールを変更できるのは、ボット追加者またはサーバーオーナーのみです。", ephemeral=True)
+                return
+        guild_cfg["owner_role_id"] = role.id
+        guild_cfg["owner_role_locked"] = True
+        guild_cfg["owner_user_id"] = interaction.user.id
+        await interaction.response.send_message(f"オーナーロールを {role.mention} に設定し、ロックしました。", ephemeral=True)
 
-    @app_commands.command(name="help", description="このBotで使えるコマンド一覧を表示します")
-    async def help_cmd(self, interaction: discord.Interaction):
-        lines = await self._help_list(interaction.guild, interaction.user)
-        await interaction.response.send_message(f"```\n{lines}\n```", ephemeral=True)
+    @app_commands.command(name="help")
+    async def slash_help(self, interaction: discord.Interaction):
+        """利用可能なコマンドの一覧を表示"""
+        await self._send_help(interaction)
 
-    @app_commands.command(name="kick", description="メンバーをキックします")
-    @app_commands.describe(member="キックするメンバー", reason="理由")
-    async def kick(self, interaction: discord.Interaction, member: discord.Member, reason: str = "理由なし"):
-        if not await has_mod_access(self.bot, interaction.guild, interaction.user):
-            raise app_commands.MissingPermissions(["mod_role_or_owner"])
-        await member.kick(reason=f"{interaction.user} により実行: {reason}")
-        embed = discord.Embed(title="👢 キックしました", color=discord.Color.orange())
-        embed.add_field(name="対象", value=str(member), inline=True)
-        embed.add_field(name="理由", value=reason, inline=True)
-        await interaction.response.send_message(embed=embed)
+    async def _send_help(self, interaction_or_ctx):
+        guild = interaction_or_ctx.guild
+        user = interaction_or_ctx.user if hasattr(interaction_or_ctx, "user") else interaction_or_ctx.author
+        is_owner = await has_owner_access(self.bot, guild, user)
+        is_mod = await has_mod_access(self.bot, guild, user)
 
-    @app_commands.command(name="ban", description="メンバーをBANします")
-    @app_commands.describe(member="BANするメンバー", reason="理由", delete_days="遡って削除するメッセージの日数(0-7)")
-    async def ban(self, interaction: discord.Interaction, member: discord.Member, reason: str = "理由なし", delete_days: app_commands.Range[int, 0, 7] = 0):
-        if not await has_mod_access(self.bot, interaction.guild, interaction.user):
-            raise app_commands.MissingPermissions(["mod_role_or_owner"])
-        await member.ban(reason=f"{interaction.user} により実行: {reason}", delete_message_days=delete_days)
-        embed = discord.Embed(title="🔨 BANしました", color=discord.Color.red())
-        embed.add_field(name="対象", value=str(member), inline=True)
-        embed.add_field(name="理由", value=reason, inline=True)
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="unban", description="ユーザーIDを指定してBANを解除します")
-    async def unban(self, interaction: discord.Interaction, user_id: str, reason: str = "理由なし"):
-        if not await has_mod_access(self.bot, interaction.guild, interaction.user):
-            raise app_commands.MissingPermissions(["mod_role_or_owner"])
-        try:
-            user = discord.Object(id=int(user_id))
-            await interaction.guild.unban(user, reason=f"{interaction.user} により実行: {reason}")
-            await interaction.response.send_message(f"✅ ID `{user_id}` のBANを解除しました。")
-        except (ValueError, discord.NotFound):
-            await interaction.response.send_message("そのユーザーIDのBANは見つかりませんでした。", ephemeral=True)
-
-    @app_commands.command(name="timeout", description="メンバーを一時的にタイムアウトします")
-    @app_commands.describe(member="対象メンバー", minutes="タイムアウトする分数", reason="理由")
-    async def timeout_cmd(self, interaction: discord.Interaction, member: discord.Member, minutes: app_commands.Range[int, 1, 40320], reason: str = "理由なし"):
-        if not await has_mod_access(self.bot, interaction.guild, interaction.user):
-            raise app_commands.MissingPermissions(["mod_role_or_owner"])
-        until = discord.utils.utcnow() + datetime.timedelta(minutes=minutes)
-        await member.timeout(until, reason=f"{interaction.user} により実行: {reason}")
-        embed = discord.Embed(title="⏳ タイムアウトしました", color=discord.Color.orange())
-        embed.add_field(name="対象", value=str(member), inline=True)
-        embed.add_field(name="時間", value=f"{minutes}分", inline=True)
-        embed.add_field(name="理由", value=reason, inline=False)
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="untimeout", description="メンバーのタイムアウトを解除します")
-    async def untimeout_cmd(self, interaction: discord.Interaction, member: discord.Member):
-        if not await has_mod_access(self.bot, interaction.guild, interaction.user):
-            raise app_commands.MissingPermissions(["mod_role_or_owner"])
-        await member.timeout(None, reason=f"{interaction.user} により解除")
-        await interaction.response.send_message(f"✅ {member.mention} のタイムアウトを解除しました。")
-
-    @app_commands.command(name="warn", description="メンバーに警告を発行します")
-    async def warn(self, interaction: discord.Interaction, member: discord.Member, reason: str):
-        if not await has_mod_access(self.bot, interaction.guild, interaction.user):
-            raise app_commands.MissingPermissions(["mod_role_or_owner"])
-        await self.bot.db.add_warning(interaction.guild_id, member.id, interaction.user.id, reason)
-        rows = await self.bot.db.get_warnings(interaction.guild_id, member.id)
-        embed = discord.Embed(title="⚠️ 警告を発行しました", color=discord.Color.yellow())
-        embed.add_field(name="対象", value=str(member), inline=True)
-        embed.add_field(name="累計警告数", value=str(len(rows)), inline=True)
-        embed.add_field(name="理由", value=reason, inline=False)
-        await interaction.response.send_message(embed=embed)
-        try:
-            await member.send(f"{interaction.guild.name} で警告を受けました。理由: {reason}")
-        except discord.HTTPException:
-            pass
-
-    @app_commands.command(name="warnings", description="メンバーの警告履歴を表示します")
-    async def warnings_cmd(self, interaction: discord.Interaction, member: discord.Member):
-        if not await has_mod_access(self.bot, interaction.guild, interaction.user):
-            raise app_commands.MissingPermissions(["mod_role_or_owner"])
-        rows = await self.bot.db.get_warnings(interaction.guild_id, member.id)
-        if not rows:
-            await interaction.response.send_message("このメンバーに警告履歴はありません。", ephemeral=True)
-            return
-        embed = discord.Embed(title=f"⚠️ {member} の警告履歴", color=discord.Color.yellow())
-        for row in rows[:15]:
-            dt = datetime.datetime.fromtimestamp(row["timestamp"])
-            embed.add_field(
-                name=f"#{row['id']} - {dt.strftime('%Y-%m-%d %H:%M')}",
-                value=f"理由: {row['reason']}\n実行者: <@{row['moderator_id']}>",
-                inline=False,
-            )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="clearwarnings", description="メンバーの警告履歴を全て削除します")
-    async def clearwarnings(self, interaction: discord.Interaction, member: discord.Member):
-        if not await has_mod_access(self.bot, interaction.guild, interaction.user):
-            raise app_commands.MissingPermissions(["mod_role_or_owner"])
-        await self.bot.db.clear_warnings(interaction.guild_id, member.id)
-        await interaction.response.send_message(f"✅ {member.mention} の警告履歴を削除しました。", ephemeral=True)
-
-    @app_commands.command(name="purge", description="指定件数のメッセージを一括削除します")
-    @app_commands.describe(count="削除する件数(1-100)")
-    async def purge(self, interaction: discord.Interaction, count: app_commands.Range[int, 1, 100]):
-        if not await has_mod_access(self.bot, interaction.guild, interaction.user):
-            raise app_commands.MissingPermissions(["mod_role_or_owner"])
-        await interaction.response.defer(ephemeral=True)
-        deleted = await interaction.channel.purge(limit=count)
-        await interaction.followup.send(f"✅ {len(deleted)} 件のメッセージを削除しました。", ephemeral=True)
-
-    @app_commands.command(name="slowmode", description="このチャンネルのスローモードを設定します")
-    @app_commands.describe(seconds="秒数(0で解除)")
-    async def slowmode(self, interaction: discord.Interaction, seconds: app_commands.Range[int, 0, 21600]):
-        if not await has_mod_access(self.bot, interaction.guild, interaction.user):
-            raise app_commands.MissingPermissions(["mod_role_or_owner"])
-        await interaction.channel.edit(slowmode_delay=seconds)
-        if seconds == 0:
-            await interaction.response.send_message("✅ スローモードを解除しました。")
-        else:
-            await interaction.response.send_message(f"✅ スローモードを {seconds} 秒に設定しました。")
-
-    @commands.command(name="help", aliases=["h"]) 
-    async def prefix_help(self, ctx: commands.Context):
-        access = await command_access_list(self.bot, ctx.guild, ctx.author)
         lines = [
-            "Dc_Sec Bot ヘルプ",
-            "- d?help / d!help: ヘルプ",
-            "- d?ban / d?b: BAN",
-            "- d?mute / d?m: タイムアウト",
-            "- d?kick / d?k: キック",
+            "`d?help` / `d?ban` / `d?mute` / `d?kick`",
+            "`d?b` / `d?m` / `d?k` で省略コマンドも使えます",
+            "`d!kick` / `d!k` でもキック可能です",
+            "`/mod role` でモデレーターロール設定",
+            "`/owner role` でオーナーロール設定",
+            "`/rolepanel` でロールパネル設定",
+            "`/reaction-role add` でリアクションロール設定",
         ]
-        if "mod" in access:
-            lines.append("- モデレーション権限あり: /kick /ban /timeout /warn /purge")
-        if "owner" in access:
-            lines.append("- オーナー権限あり: /mod role /owner role")
-        await ctx.send("\n".join(lines))
+        if is_owner or is_mod:
+            lines.append("モデレーションコマンドが利用可能です。")
+        else:
+            lines.append("通常閲覧のみです。")
 
-    @commands.command(name="ban", aliases=["b"]) 
+        content = "\n".join(lines)
+        if hasattr(interaction_or_ctx, "response"):
+            await interaction_or_ctx.response.send_message(content, ephemeral=True)
+        else:
+            await interaction_or_ctx.send(content)
+
+    @app_commands.command(name="rolepanel")
+    @app_commands.describe(message_id="対象メッセージID", emoji="絵文字", role="付与するロール")
+    async def rolepanel(self, interaction: discord.Interaction, message_id: str, emoji: str, role: discord.Role):
+        """リアクションロールのパネル候補を設定する"""
+        await ensure_mod_access(interaction)
+        if not await can_assign_role(interaction.client, interaction.guild, interaction.user, role):
+            await interaction.response.send_message("そのロールは付与できません。対象ロールが自分より上位またはボットの上位ロールに近すぎます。", ephemeral=True)
+            return
+        cfg = await self._guild_cfg(interaction.guild)
+        cfg.setdefault("rolepanels", {})
+        cfg["rolepanels"][message_id] = {"emoji": emoji, "role_id": role.id}
+        await interaction.response.send_message(f"メッセージ `{message_id}` に対して `{emoji}` で {role.mention} を付与する設定を保存しました。", ephemeral=True)
+
+    @app_commands.command(name="ban")
+    @app_commands.describe(member="対象ユーザー", reason="理由")
+    async def slash_ban(self, interaction: discord.Interaction, member: discord.Member, reason: str = "理由なし"):
+        """メンバーをBANする"""
+        await ensure_mod_access(interaction)
+        if not await self._can_manage_member(interaction.user, member, interaction.guild):
+            await interaction.response.send_message("このユーザーをBANできません。", ephemeral=True)
+            return
+        await member.ban(reason=reason)
+        await interaction.response.send_message(f"{member.mention} をBANしました。理由: {reason}", ephemeral=False)
+
+    @app_commands.command(name="kick")
+    @app_commands.describe(member="対象ユーザー", reason="理由")
+    async def slash_kick(self, interaction: discord.Interaction, member: discord.Member, reason: str = "理由なし"):
+        """メンバーをキックする"""
+        await ensure_mod_access(interaction)
+        if not await self._can_manage_member(interaction.user, member, interaction.guild):
+            await interaction.response.send_message("このユーザーをキックできません。", ephemeral=True)
+            return
+        await member.kick(reason=reason)
+        await interaction.response.send_message(f"{member.mention} をキックしました。理由: {reason}", ephemeral=False)
+
+    @app_commands.command(name="mute")
+    @app_commands.describe(member="対象ユーザー", minutes="ミュート時間（分）", reason="理由")
+    async def slash_mute(self, interaction: discord.Interaction, member: discord.Member, minutes: int = 10, reason: str = "理由なし"):
+        """メンバーをタイムアウトする"""
+        await ensure_mod_access(interaction)
+        if not await self._can_manage_member(interaction.user, member, interaction.guild):
+            await interaction.response.send_message("このユーザーをミュートできません。", ephemeral=True)
+            return
+        timeout = datetime.timedelta(minutes=max(1, min(minutes, 40320)))
+        await member.timeout(timeout, reason=reason)
+        await interaction.response.send_message(f"{member.mention} を {minutes} 分タイムアウトしました。理由: {reason}", ephemeral=False)
+
+    @commands.command(name="help", aliases=["h"])
+    async def prefix_help(self, ctx: commands.Context):
+        await self._send_help(ctx)
+
+    @commands.command(name="ban", aliases=["b"])
     async def prefix_ban(self, ctx: commands.Context, member: discord.Member, *, reason: str = "理由なし"):
         if not await has_mod_access(self.bot, ctx.guild, ctx.author):
-            await ctx.send("このコマンドはモデレーターロールまたはオーナー権限が必要です。")
+            await ctx.send("このコマンドを実行できる権限がありません。")
             return
-        await member.ban(reason=f"{ctx.author} により実行: {reason}")
-        await ctx.send(f"✅ {member.mention} をBANしました。理由: {reason}")
-
-    @commands.command(name="mute", aliases=["m"]) 
-    async def prefix_mute(self, ctx: commands.Context, member: discord.Member, minutes: int = 10, *, reason: str = "理由なし"):
-        if not await has_mod_access(self.bot, ctx.guild, ctx.author):
-            await ctx.send("このコマンドはモデレーターロールまたはオーナー権限が必要です。")
+        if not await self._can_manage_member(ctx.author, member, ctx.guild):
+            await ctx.send("このユーザーをBANできません。")
             return
-        until = discord.utils.utcnow() + datetime.timedelta(minutes=minutes)
-        await member.timeout(until, reason=f"{ctx.author} により実行: {reason}")
-        await ctx.send(f"✅ {member.mention} を {minutes} 分タイムアウトしました。理由: {reason}")
+        await member.ban(reason=reason)
+        await ctx.send(f"{member.mention} をBANしました。理由: {reason}")
 
-    @commands.command(name="kick", aliases=["k"]) 
+    @commands.command(name="kick", aliases=["k"])
     async def prefix_kick(self, ctx: commands.Context, member: discord.Member, *, reason: str = "理由なし"):
         if not await has_mod_access(self.bot, ctx.guild, ctx.author):
-            await ctx.send("このコマンドはモデレーターロールまたはオーナー権限が必要です。")
+            await ctx.send("このコマンドを実行できる権限がありません。")
             return
-        await member.kick(reason=f"{ctx.author} により実行: {reason}")
-        await ctx.send(f"✅ {member.mention} をキックしました。理由: {reason}")
+        if not await self._can_manage_member(ctx.author, member, ctx.guild):
+            await ctx.send("このユーザーをキックできません。")
+            return
+        await member.kick(reason=reason)
+        await ctx.send(f"{member.mention} をキックしました。理由: {reason}")
+
+    @commands.command(name="mute", aliases=["m"])
+    async def prefix_mute(self, ctx: commands.Context, member: discord.Member, minutes: int = 10, *, reason: str = "理由なし"):
+        if not await has_mod_access(self.bot, ctx.guild, ctx.author):
+            await ctx.send("このコマンドを実行できる権限がありません。")
+            return
+        if not await self._can_manage_member(ctx.author, member, ctx.guild):
+            await ctx.send("このユーザーをミュートできません。")
+            return
+        timeout = datetime.timedelta(minutes=max(1, min(minutes, 40320)))
+        await member.timeout(timeout, reason=reason)
+        await ctx.send(f"{member.mention} を {minutes} 分タイムアウトしました。理由: {reason}")
+
+    @commands.command(name="mute", aliases=["m"])
+    async def prefix_mute_legacy(self, ctx: commands.Context, member: discord.Member, minutes: int = 10, *, reason: str = "理由なし"):
+        await self.prefix_mute(ctx, member, minutes, reason)
 
 
-async def setup(bot: commands.Bot):
+async def setup(bot):
     await bot.add_cog(Moderation(bot))
