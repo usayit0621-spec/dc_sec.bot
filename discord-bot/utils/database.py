@@ -664,4 +664,3 @@ class Database:
     async def mark_reminder_done(self, reminder_id):
         await self.conn.execute("UPDATE reminders SET notified=1 WHERE id=?", (reminder_id,))
         await self.conn.commit()
-" , 
