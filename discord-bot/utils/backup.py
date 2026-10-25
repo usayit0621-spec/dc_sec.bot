@@ -8,7 +8,7 @@ import discord
 
 log = logging.getLogger("backup")
 
-BACKUP_CHANNEL_ID = 1525916749034295508
+BACKUP_CHANNEL_ID = 1550535060636307466
 BACKUP_FILENAME = "dc_sec_backup.json"
 LOCAL_TEMP_PATH = "backup_temp.json"
 
